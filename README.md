@@ -2,7 +2,7 @@
 
 A TODO list pane for the Claude desktop app: add, edit, check off, remove and drag to reorder tasks, and press ▶ Start to write an opening prompt for a task into the prompt box. Optionally it watches Azure DevOps and adds what needs you.
 
-The pane opens only when you run `/todo`. In a brand new session, before your first message, the menu lists it as `/todo-pane:todo`; after the first message plain `/todo` works too. Both do the same.
+The pane opens when you run `/todo`. In a brand new session, before your first message, the menu lists it as `/todo-pane:todo`; after the first message plain `/todo` works too. Both do the same.
 
 > **Agents: to add, change, tick off or remove tasks, edit `%USERPROFILE%\.claude\todo-pane\tasks.json` and nothing else.** The pane refreshes by itself. Read "Editing the list from outside" below first; the bundled skill `update-todo` (in `skills/`) is the short version. Needs plugin version 0.3.0 or newer. If `tasks.json` does not exist, do not create it (see below).
 
