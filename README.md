@@ -6,18 +6,18 @@ The pane opens only when you run `/todo`.
 
 > **Agents: to add, change, tick off or remove tasks, edit `%USERPROFILE%\.claude\todo-pane\tasks.json` and nothing else.** The pane refreshes by itself. Read "Editing the list from outside" below first; the bundled skill `update-todo` (in `skills/`) is the short version. Needs plugin version 0.3.0 or newer. If `tasks.json` does not exist, do not create it (see below).
 
-Windows only for the alerts (they use Windows Task Scheduler and Windows notifications). The list itself works anywhere.
+Windows only for Auto Refresh (they use Windows Task Scheduler and Windows notifications). The list itself works anywhere.
 
 ## Setup
 
 ### For humans (2 minutes)
 
-You need the Claude desktop app and [Node.js](https://nodejs.org) (on your PATH). For the Azure DevOps alerts you also need Windows and the [Azure CLI](https://aka.ms/installazurecliwindows) signed in with `az login`.
+You need the Claude desktop app and [Node.js](https://nodejs.org) (on your PATH). For the Azure DevOps Auto Refresh you also need Windows and the [Azure CLI](https://aka.ms/installazurecliwindows) signed in with `az login`.
 
 1. On the GitHub page of this repo press **Code → Download ZIP**.
 2. In the Claude app open **Settings → Plugins → Add** and import the ZIP file.
 3. Start a **new session** and type `/todo`. The pane opens.
-4. Optional: press **Set up** in the pane to turn on the Azure DevOps alerts (see "Alerts" below).
+4. Optional: press **Set up** in the pane to turn on the Azure DevOps Auto Refresh (see "Auto Refresh" below).
 
 Updating: download the new ZIP and import it again, then start a new session. Sessions that were already open keep the old version until you close them.
 
@@ -27,7 +27,7 @@ If the import is refused, the ZIP must have the `.claude-plugin` folder at its t
 
 Do these steps in order and check each one. Never overwrite a file or setting the user already has; merge into it. Do not touch `%USERPROFILE%\.claude\todo-pane\` (the user's data: `tasks.json`, `alerts.json`, ...).
 
-1. **Check prerequisites.** `node --version` must work (the plugin starts `node` for its file watcher and prompt-title hook). `az --version` is needed only if the user wants alerts. The plugin loads only in the Claude desktop app (it is a pane plugin); it does nothing in a plain terminal session. If a prerequisite is missing, tell the user and stop; do not install software without asking.
+1. **Check prerequisites.** `node --version` must work (the plugin starts `node` for its file watcher and prompt-title hook). `az --version` is needed only if the user wants Auto Refresh. The plugin loads only in the Claude desktop app (it is a pane plugin); it does nothing in a plain terminal session. If a prerequisite is missing, tell the user and stop; do not install software without asking.
 2. **Get the files.** If the user has no local copy, clone this repository into a stable folder of their choice (ask, or propose `%USERPROFILE%\claude-plugins\todo-pane`; not inside a temp or session folder). The folder you want is the one containing `.claude-plugin\plugin.json`. Check that `version` in that file is 0.3.0 or newer.
 3. **Register the folder.** Read `%USERPROFILE%\.claude\settings.json` (it may not exist, or may have no `env` block). Set `env.CLAUDE_CODE_PLUGIN_DIRS` to the plugin folder's absolute path, with `\\` escaped in JSON. If the variable already has a value, keep it and add the new path in the same format as the existing entries (ask the user if you cannot tell the separator). Keep every other key in the file unchanged and keep the file valid JSON. Show the user the change.
 4. **Verify it loads, without opening a session of theirs.** Run a throwaway headless session and read its debug log:
@@ -36,20 +36,20 @@ Do these steps in order and check each one. Never overwrite a file or setting th
    ```
    Then search the log for `todo-pane`. `hooks module todo-pane@inline loaded` means success. `did not load` followed by a reason means failure: report the reason to the user. The headless run uses the user's real data folder, so it must not create, edit or delete tasks.
 5. **Tell the user what to do next:** close and reopen Claude, start a new session and type `/todo`. The pane opens only on that command. You cannot open it for them. After the first run `%USERPROFILE%\.claude\todo-pane\tasks.json` exists and the agent rules in "Editing the list from outside" apply.
-6. **Alerts (only if the user asks).** Do not run the setup for them: it creates a Windows Task Scheduler job and needs the user's `az login`. Point them to the **Set up** button in the pane and to "Alerts: how they work" below.
+6. **Auto Refresh (only if the user asks).** Do not run the setup for them: it creates a Windows Task Scheduler job and needs the user's `az login`. Point them to the **Set up** button in the pane and to "Auto Refresh: how it works" below.
 
 Troubleshooting: `/todo` is "not installed" or the pane does not open → the plugin did not load; repeat step 4 and read the reason in the log, and check that the path in `CLAUDE_CODE_PLUGIN_DIRS` points at the folder that contains `.claude-plugin`. Changes to the plugin files take effect only in new sessions.
 
-## Alerts: how they work
+## Auto Refresh: how it works
 
-On first open the pane offers to set up alerts. Setup does this, after you press Set up:
+On first open the pane offers to set up Auto Refresh. Setup does this, after you press Set up:
 
-1. Writes `alerts.json` with default settings if it does not exist yet, and copies `scripts/ado-watch.ps1` to `%USERPROFILE%\.claude\todo-pane\ado-watch.ps1` (the plugin refreshes this copy at every session start while alerts are on, and before every ↻ refresh).
+1. Writes `alerts.json` with default settings if it does not exist yet, and copies `scripts/ado-watch.ps1` to `%USERPROFILE%\.claude\todo-pane\ado-watch.ps1` (the plugin refreshes this copy at every session start while Auto Refresh is on, and before every ↻ refresh).
 2. Checks that your `az login` works (the script signs in with your own Azure CLI session, nothing is stored).
 3. Creates a per-user scheduled job named `TodoPaneAdoWatch` that runs every `intervalMinutes` (10 by default).
 4. Runs once to take a baseline (existing items do not flood the list) and sends a test notification.
 
-Requirements: the [Azure CLI](https://aka.ms/installazurecliwindows) installed and signed in with `az login` using an account that can see the project. If `az` is missing or signed out, setup stops with a message saying which. Once running, if the sign-in expires the alerts pause, one "TODO alerts paused" notification appears (at most every 12 hours) and they resume by themselves after `az login`. If `az` is not on your PATH, add `"az": "C:\\path\\to\\az.cmd"` to `alerts.json`.
+Requirements: the [Azure CLI](https://aka.ms/installazurecliwindows) installed and signed in with `az login` using an account that can see the project. If `az` is missing or signed out, setup stops with a message saying which. Once running, if the sign-in expires, Auto Refresh pauses, one "TODO alerts paused" notification appears (at most every 12 hours) and it resumes by itself after `az login`. If `az` is not on your PATH, add `"az": "C:\\path\\to\\az.cmd"` to `alerts.json`.
 
 The job is read only: it never writes to Azure DevOps. It writes `inbox.json` next to the settings file; the pane reads it every minute and turns each item into a task with a link to its source.
 
@@ -74,7 +74,7 @@ What gets added, and when it closes by itself:
 | You are the Tester (`Custom.Tester`) of a ticket whose State is Resolved (ready to test) | the ticket leaves Resolved, or you are no longer the tester. Skipped when the ticket is also assigned to you (the assigned task covers it) |
 | You are a reviewer and have not voted | you vote, or the PR closes. Once you have commented, it is dropped until the author pushes again **and** none of your threads is still waiting for an answer (a thread counts as answered when it is resolved or someone replied after you). A new push reopens the task even if you closed it by hand |
 
-Removing (✕) an alert task makes it stay gone until its source has new activity; ticking it done keeps it in the list. One task per source: more activity on the same PR updates its task, it does not add another. A task you tick yourself stays closed until the source has new activity (for review tasks: a new push after your comments, once they are answered). Tasks closed by the watcher reopen if the source shows up again, and disappear 3 days after closing (change with `keepResolvedDays`); tasks you tick yourself expire by the same rule, and an expired alert task stays gone until its source has new activity.
+Removing (✕) an Auto Refresh task makes it stay gone until its source has new activity; ticking it done keeps it in the list. One task per source: more activity on the same PR updates its task, it does not add another. A task you tick yourself stays closed until the source has new activity (for review tasks: a new push after your comments, once they are answered). Tasks closed by the watcher reopen if the source shows up again, and disappear 3 days after closing (change with `keepResolvedDays`); tasks you tick yourself expire by the same rule, and an expired alert task stays gone until its source has new activity.
 
 ## Where to change things
 
@@ -106,7 +106,7 @@ Other files in the same folder, written by the plugin and the job (no need to ed
 
 ### How to edit it (rules for an agent)
 
-1. Read the whole file, change what was asked, and write the whole file back (UTF-8, a JSON array). Read it right before writing: the pane, the alert job or another session may have changed it a moment ago.
+1. Read the whole file, change what was asked, and write the whole file back (UTF-8, a JSON array). Read it right before writing: the pane, the Auto Refresh job or another session may have changed it a moment ago.
 2. Leave every other task exactly as it is, including its fields. Never reorder, rewrite or drop tasks you were not asked to touch.
 3. Do not edit `inbox.json`, `tasks-backup.json` or the plugin store file. Only `tasks.json`.
 4. After you save, the plugin may rewrite the file in its standard layout (it fills in missing ids and closing info). Read it again before the next edit.
@@ -121,8 +121,8 @@ Other files in the same folder, written by the plugin and the job (no need to ed
 | `isDone` | `true` or `false`. Required on existing tasks; a new task without it is open. |
 | `inProgress`, `startedAt` | In progress: `inProgress: true` plus the start time. |
 | `createdAt` | Creation time; drives the orange **New** tag for 24 hours. Filled in for new tasks. |
-| `closedBy`, `closedAt` | Set when done: `"user"` for a task you or the user closed, `"auto"` when the alert job closed it. Filled in for you when you set `isDone: true`; removed when you reopen. |
-| `key`, `rev`, `url` | Only on tasks the alerts added. Do not change them (see below). |
+| `closedBy`, `closedAt` | Set when done: `"user"` for a task you or the user closed, `"auto"` when the Auto Refresh job closed it. Filled in for you when you set `isDone: true`; removed when you reopen. |
+| `key`, `rev`, `url` | Only on tasks Auto Refresh added. Do not change them (see below). |
 | `sessionId`, `appSessionId` | The session a task was started in (for Resume). Do not change. |
 
 ### Recipes
@@ -140,9 +140,9 @@ The first task in the array is shown first.
 
 ### Finding the right task
 
-Tasks the alerts added have a `key` that starts with the kind of event and ends with the ticket or PR number: `wi-assigned:12345` (assigned to you), `wi-mention:12345` (you were mentioned), `wi-tester:12345` (you are the tester), `wi-child:…` (new child item), `pr-reply:67890` (replies on your PR), `pr-review:…` (you are a reviewer), `pr-build:…` (failing build). The same ticket can have several tasks (assigned and mentioned, for example). Match on the number in `key` or `text`. If more than one fits and the user did not say which, ask, or change all of them only when they asked for the whole ticket.
+Tasks Auto Refresh added have a `key` that starts with the kind of event and ends with the ticket or PR number: `wi-assigned:12345` (assigned to you), `wi-mention:12345` (you were mentioned), `wi-tester:12345` (you are the tester), `wi-child:…` (new child item), `pr-reply:67890` (replies on your PR), `pr-review:…` (you are a reviewer), `pr-build:…` (failing build). The same ticket can have several tasks (assigned and mentioned, for example). Match on the number in `key` or `text`. If more than one fits and the user did not say which, ask, or change all of them only when they asked for the whole ticket.
 
-Alert tasks close and reopen by themselves when the source changes (see the table above). A task that was closed by hand stays closed until its source has new activity.
+Auto Refresh tasks close and reopen by themselves when the source changes (see the table above). A task that was closed by hand stays closed until its source has new activity.
 
 ### If the file is not valid
 
@@ -154,4 +154,4 @@ The whole file is rejected, nothing is half-loaded: the pane keeps the list it h
 
 To test the script by hand: `powershell -File %USERPROFILE%\.claude\todo-pane\ado-watch.ps1 -DryRun` prints what it would add. `-TestToast` raises a test notification.
 
-If you ask your own Claude to change the alerts, point it at this file and at `alerts.json`. Never edit `ado-watch.ps1` in the data folder: the plugin overwrites it from its own `scripts/` copy at session start. Change the plugin's copy instead. The script never writes to Azure DevOps; keep it that way.
+If you ask your own Claude to change Auto Refresh, point it at this file and at `alerts.json`. Never edit `ado-watch.ps1` in the data folder: the plugin overwrites it from its own `scripts/` copy at session start. Change the plugin's copy instead. The script never writes to Azure DevOps; keep it that way.

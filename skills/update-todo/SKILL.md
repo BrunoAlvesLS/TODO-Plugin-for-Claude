@@ -18,13 +18,13 @@ This changes the local list only. It never touches Azure DevOps: marking a ticke
 
 ## 2. Edit rules
 
-1. Read the whole file right before you write. The pane, the alert job or another session may have changed it a moment ago; never write from an earlier read.
+1. Read the whole file right before you write. The pane, the Auto Refresh job or another session may have changed it a moment ago; never write from an earlier read.
 2. Change only the tasks the user asked about. Keep every other task and every field exactly as it is, in the same order.
 3. Write the whole file back as a JSON array, UTF-8, 2-space indent. Times are milliseconds since 1970 (`Date.now()` in node, `[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()` in PowerShell).
 
 ## 3. Find the right task
 
-Match by ticket or PR number in `text` or `key`. Alert tasks have a `key` like `wi-assigned:12345` (assigned to the user), `wi-mention:12345` (mentioned), `wi-tester:12345` (user is the tester), `wi-child:...`, `pr-reply:67890` (replies on their PR), `pr-review:...` (they review it), `pr-build:...` (failing build). One ticket can have several tasks. If more than one fits and the user did not say which, ask; change all of them only when they asked for the whole ticket.
+Match by ticket or PR number in `text` or `key`. Auto Refresh tasks have a `key` like `wi-assigned:12345` (assigned to the user), `wi-mention:12345` (mentioned), `wi-tester:12345` (user is the tester), `wi-child:...`, `pr-reply:67890` (replies on their PR), `pr-review:...` (they review it), `pr-build:...` (failing build). One ticket can have several tasks. If more than one fits and the user did not say which, ask; change all of them only when they asked for the whole ticket.
 
 ## 4. Recipes
 
@@ -53,6 +53,6 @@ Wait about 2 seconds and read the file again. The plugin may have rewritten it i
 
 Then tell the user in one line what changed (task id and text).
 
-Alert tasks close and reopen by themselves when their source changes, so a task you marked done can come back if the ticket or PR has new activity. That is expected.
+Auto Refresh tasks close and reopen by themselves when their source changes, so a task you marked done can come back if the ticket or PR has new activity. That is expected.
 
 The full field reference is in the plugin's `README.md`, section "Editing the list from outside".
