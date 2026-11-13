@@ -1,0 +1,16 @@
+{
+  "modules": ["./register.tsx"],
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/title-hook.js\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

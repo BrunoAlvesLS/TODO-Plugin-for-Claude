@@ -1,0 +1,13 @@
+{
+  "name": "todo-pane",
+  "version": "0.3.0",
+  "description": "A TODO pane: add, edit, check off, remove and drag to reorder your tasks, and write an opening prompt for each",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "playbookPath": {
+      "type": "string",
+      "title": "Personal playbook file",
+      "description": "Optional path to your own playbook (a markdown file) that maps task types to your skills and house rules. Leave empty to use only the generic rules."
+    }
+  }
+}
