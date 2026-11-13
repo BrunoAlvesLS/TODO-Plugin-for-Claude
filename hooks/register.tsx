@@ -1,18 +1,25 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Alerts, Task } from '../types'
+import type { Alerts, Dismissed, Inbox, Source, Task } from '../types'
+import { canonical, nextId } from './core/tasks'
+import {
+  DAY_MS,
+  DEFAULT_KEEP_RESOLVED_DAYS,
+  expiredUserTasks,
+  pruneDismissedKeys,
+  reconcile,
+} from './core/reconcile'
+import { ado } from './integrations/ado'
+import { SOURCES } from './integrations'
 
 // The host's `$` surface is wide and loosely typed across hook events.
 type Ctx = any
 
 const PANE = 'todo'
 const PANE_TITLE = 'TODO'
-const JOB = 'TodoPaneAdoWatch'
 
 const SYNC_MS = 60_000
-const DAY_MS = 24 * 60 * 60 * 1000
-const DEFAULT_KEEP_RESOLVED_DAYS = 3
 const DEFAULT_INTERVAL_MINUTES = 10
 
 const WATCH_TIMEOUT_MS = 180_000
@@ -84,9 +91,6 @@ const alerts = atom(
   { shape: 'alerts-1' },
 )
 
-/** Alert task key -> rev at the time it was removed by hand. */
-type Dismissed = Record<string, string>
-
 const readDismissed = async ($: Ctx): Promise<Dismissed> =>
   ((await $.store.get('dismissed')) as Dismissed | undefined) ?? {}
 
@@ -110,7 +114,6 @@ let lastWritten = ''
 /** The last invalid text a warning was shown for, so one bad save warns once. */
 let lastRejected = ''
 
-const canonical = (list: Task[]) => `${JSON.stringify(list, null, 2)}\n`
 
 /** Validates and cleans a hand-edited list. Rejects the whole file on the first problem, so nothing is dropped silently. */
 const parseTasks = (text: string, now: number): { list: Task[] } | { error: string } => {
@@ -284,7 +287,6 @@ const restoreTasks = async ($: Ctx) => {
 
 /* ----------------------------------------------------------- list rules */
 
-const nextId = (list: Task[]) => list.reduce((m, t) => Math.max(m, t.id), 0) + 1
 
 const moveTo = (list: Task[], id: number, to: number): Task[] => {
   const from = list.findIndex(t => t.id === id)
@@ -332,134 +334,52 @@ const applyStatus = (t: Task, status: string | undefined, now: number): Task => 
 
 /* ---------------------------------------------------------- inbox sync */
 
-type InboxItem = {
-  key: string
-  title: string
-  url: string
-  rev: string
-  /** Existed when alerts were set up: tracked by the watcher, never added as a task. */
-  baseline?: boolean
-}
-/** `complete` means `items` is the full current set, so anything missing has been resolved. */
-type Inbox = { complete?: boolean; items?: InboxItem[] }
-
-const inboxItems = (inbox: Inbox): InboxItem[] =>
-  Array.isArray(inbox.items) ? inbox.items : []
-
-/** Turns the watcher's current list into task changes: add, reopen, auto-close, prune. */
-const reconcile = (
-  list: Task[],
-  inbox: Inbox,
-  now: number,
-  keepMs: number = DEFAULT_KEEP_RESOLVED_DAYS * DAY_MS,
-  dismissed: Dismissed = {},
-): Task[] => {
-  const items = inboxItems(inbox)
-  const present = new Set(items.map(i => i.key))
-  let next = list.map(t => ({ ...t }))
-  let id = nextId(next)
-
-  for (const it of items) {
-    if (it.baseline) continue
-    const task = next.find(t => t.key === it.key)
-    // Removed by hand: stay gone until the source has new activity (its rev changes).
-    if (!task && it.key in dismissed && dismissed[it.key] === (it.rev ?? '')) continue
-    if (!task) {
-      next.unshift({
-        id: id++,
-        text: it.title,
-        isDone: false,
-        key: it.key,
-        rev: it.rev,
-        url: it.url,
-        createdAt: now,
-      })
-    } else if (task.rev !== it.rev) {
-      task.text = it.title
-      task.rev = it.rev
-      task.url = it.url
-      if (task.isDone) {
-        task.isDone = false
-        task.inProgress = false
-        delete task.closedBy
-        delete task.closedAt
-      }
-    } else if (task.isDone && task.closedBy === 'auto') {
-      task.isDone = false
-      delete task.closedBy
-      delete task.closedAt
-    }
-    if (task && task.url !== it.url) task.url = it.url
-  }
-
-  if (inbox.complete) {
-    for (const t of next) {
-      if (t.key && !t.isDone && !present.has(t.key)) {
-        t.isDone = true
-        t.inProgress = false
-        t.closedBy = 'auto'
-        t.closedAt = now
-      }
-    }
-  }
-
-  next = next.filter(
-    t =>
-      !(
-        t.closedBy !== undefined &&
-        t.closedAt !== undefined &&
-        now - t.closedAt > keepMs
-      ),
-  )
-  return next
-}
-
+/** Days a closed task stays listed. A list rule that still lives in the Azure DevOps settings file. */
 const readKeepResolvedMs = async ($: Ctx): Promise<number> => {
-  const cfg = await readJson($, await dataFile($, 'alerts.json'))
+  const cfg = await readJson($, await dataFile($, ado.settingsFile))
   const days = Number(cfg?.keepResolvedDays)
   return (Number.isFinite(days) && days >= 0 ? days : DEFAULT_KEEP_RESOLVED_DAYS) * DAY_MS
 }
 
-/** Drops dismissals whose source is gone, so a reused key isn't hidden forever. */
-const pruneDismissed = async ($: Ctx, inbox: Inbox, dismissed: Dismissed): Promise<Dismissed> => {
-  const present = new Set(inboxItems(inbox).map(i => i.key))
-  const kept: Dismissed = {}
-  for (const [k, rev] of Object.entries(dismissed)) if (present.has(k)) kept[k] = rev
+const pruneDismissed = async (
+  $: Ctx,
+  inbox: Inbox,
+  source: Source,
+  dismissed: Dismissed,
+): Promise<Dismissed> => {
+  const kept = pruneDismissedKeys(inbox, source, dismissed)
   if (Object.keys(kept).length !== Object.keys(dismissed).length) {
     await $.store.set('dismissed', kept)
   }
   return kept
 }
 
-const syncInbox = async ($: Ctx) => {
-  // Also the fallback for the file watcher: picks up an outside edit of tasks.json within a minute.
-  await reloadFromFile($)
-  const inbox = (await readJson($, await dataFile($, 'inbox.json'))) as Inbox | undefined
+const syncSource = async ($: Ctx, source: Source) => {
+  const inbox = (await readJson($, await dataFile($, source.inboxFile))) as Inbox | undefined
   if (!inbox || typeof inbox !== 'object') return
   const now = await $.clock.now()
   const keepMs = await readKeepResolvedMs($)
   const current = await read($, tasks)
   let dismissed = await readDismissed($)
-  if (inbox.complete) dismissed = await pruneDismissed($, inbox, dismissed)
-  const next = reconcile(current, inbox, now, keepMs, dismissed)
+  if (inbox.complete) dismissed = await pruneDismissed($, inbox, source, dismissed)
+  const next = reconcile(current, inbox, source, now, keepMs, dismissed)
   // Expired tasks the user ticked: remember them like a ✕ removal so a source that is still
-  // active does not bring them back as new tasks. Failing builds are exempt: ticking one off
-  // must not hide it for good while the build is still red.
-  const gone = current.filter(
-    t =>
-      t.closedBy === 'user' &&
-      t.key &&
-      !t.key.startsWith('pr-build:') &&
-      !next.some(n => n.id === t.id),
-  )
+  // active does not bring them back as new tasks (each source can exempt keys, e.g. failing builds).
+  const gone = expiredUserTasks(current, next, SOURCES)
   if (gone.length) {
     for (const t of gone) dismissed[t.key as string] = t.rev ?? ''
     await $.store.set('dismissed', dismissed)
   }
   // Skip the write (and its backup) on the usual no-change tick.
   if (JSON.stringify(next) !== JSON.stringify(current)) {
-    await mutate($, l => reconcile(l, inbox, now, keepMs, dismissed))
+    await mutate($, l => reconcile(l, inbox, source, now, keepMs, dismissed))
   }
+}
+
+const syncInbox = async ($: Ctx) => {
+  // Also the fallback for the file watcher: picks up an outside edit of tasks.json within a minute.
+  await reloadFromFile($)
+  for (const source of SOURCES) await syncSource($, source)
 }
 
 /* ----------------------------------------------------- links, sessions */
@@ -541,7 +461,7 @@ const writePendingTitle = async ($: Ctx, task: Task, sessionId: string, at: numb
   } catch {}
 }
 
-/* -------------------------------------------------------------- alerts */
+/* ------------------------------------------- Azure DevOps integration (Auto-sync) */
 
 const defaultSettings = (organization: string, project: string) => ({
   organization,
@@ -562,9 +482,9 @@ const defaultSettings = (organization: string, project: string) => ({
   quietHours: null,
 })
 
-const jobExists = async ($: Ctx): Promise<boolean> => {
+const adoJobExists = async ($: Ctx): Promise<boolean> => {
   try {
-    return (await $.process.run(['schtasks', '/Query', '/TN', JOB])).exitCode === 0
+    return (await $.process.run(['schtasks', '/Query', '/TN', ado.jobName])).exitCode === 0
   } catch {
     return false
   }
@@ -577,7 +497,7 @@ const detectSuggestions = async ($: Ctx): Promise<string[]> => {
     cwd = String(await $.session.cwd())
   } catch {}
   const found = await $.process.run(
-    psArgs(['-File', `${$.plugin.root}/scripts/ado-watch.ps1`, '-Detect', '-Cwd', cwd]),
+    psArgs(['-File', `${$.plugin.root}/scripts/${ado.scriptFile}`, '-Detect', '-Cwd', cwd]),
     { timeoutMs: LOOKUP_TIMEOUT_MS },
   )
   const line = String(found.stdout)
@@ -588,10 +508,10 @@ const detectSuggestions = async ($: Ctx): Promise<string[]> => {
   return Array.isArray(parsed.suggestions) ? parsed.suggestions : []
 }
 
-const refreshAlerts = async ($: Ctx) => {
-  const settingsPath = await dataFile($, 'alerts.json')
+const adoRefresh = async ($: Ctx) => {
+  const settingsPath = await dataFile($, ado.settingsFile)
   const hasSettings = await $.fs.exists(settingsPath).catch(() => false)
-  const state: Alerts['state'] = (await jobExists($)) ? 'on' : 'off'
+  const state: Alerts['state'] = (await adoJobExists($)) ? 'on' : 'off'
   await setAlerts($, a => ({ ...a, state, hasSettings, busy: false }))
 
   if (state !== 'on' && !hasSettings) {
@@ -603,10 +523,10 @@ const refreshAlerts = async ($: Ctx) => {
 }
 
 /** The job runs a copy in the data folder, so the plugin can update without re-creating the job. */
-const copyScript = async ($: Ctx): Promise<string> => {
-  const dst = await dataFile($, 'ado-watch.ps1')
-  const src = await readText($, `${$.plugin.root}/scripts/ado-watch.ps1`)
-  if (!src) throw new Error('ado-watch.ps1 is missing from the plugin')
+const adoCopyScript = async ($: Ctx): Promise<string> => {
+  const dst = await dataFile($, ado.scriptFile)
+  const src = await readText($, `${$.plugin.root}/scripts/${ado.scriptFile}`)
+  if (!src) throw new Error(`${ado.scriptFile} is missing from the plugin`)
   if ((await readText($, dst)) !== src) await $.fs.write(dst, src)
   return dst
 }
@@ -614,10 +534,10 @@ const copyScript = async ($: Ctx): Promise<string> => {
 const runWatch = ($: Ctx, script: string, ...flags: string[]) =>
   $.process.run(psArgs(['-File', script, ...flags]), { timeoutMs: WATCH_TIMEOUT_MS })
 
-const checkNow = async ($: Ctx) => {
+const adoCheckNow = async ($: Ctx) => {
   await setAlerts($, a => ({ ...a, checking: true }))
   try {
-    const script = await copyScript($)
+    const script = await adoCopyScript($)
     const before = (await read($, tasks)).length
     await runWatch($, script)
     await syncInbox($)
@@ -650,7 +570,7 @@ const createJob = ($: Ctx, script: string, everyMinutes: number) =>
     'schtasks',
     '/Create',
     '/TN',
-    JOB,
+    ado.jobName,
     '/SC',
     'MINUTE',
     '/MO',
@@ -662,11 +582,11 @@ const createJob = ($: Ctx, script: string, everyMinutes: number) =>
   ])
 
 /** `target` is "organization/project"; ignored when alerts.json already exists. */
-const setupAlerts = async ($: Ctx, target: string) => {
+const adoSetup = async ($: Ctx, target: string) => {
   const note = (text: string) => setAlerts($, a => ({ ...a, busy: false, note: text }))
   await setAlerts($, a => ({ ...a, busy: true, note: 'Setting up...' }))
   try {
-    const settingsPath = await dataFile($, 'alerts.json')
+    const settingsPath = await dataFile($, ado.settingsFile)
     if (!(await $.fs.exists(settingsPath))) {
       const [org, project] = target.split('/').map(s => s.trim())
       if (!org || !project) {
@@ -674,7 +594,7 @@ const setupAlerts = async ($: Ctx, target: string) => {
       }
       await $.fs.write(settingsPath, JSON.stringify(defaultSettings(org, project), null, 2))
     }
-    const script = await copyScript($)
+    const script = await adoCopyScript($)
 
     const check = await runWatch($, script, '-DryRun')
     if (check.exitCode !== 0) {
@@ -689,7 +609,7 @@ const setupAlerts = async ($: Ctx, target: string) => {
     // First run records the baseline, so existing items don't flood the list.
     await runWatch($, script)
     await $.process.run(psArgs(['-File', script, '-TestToast']))
-    await refreshAlerts($)
+    await adoRefresh($)
     await setAlerts($, a => ({ ...a, note: undefined, dismissed: undefined }) as Alerts)
     await syncInbox($)
     $.ui.toast('Auto-sync is on. A test notification was sent.')
@@ -698,12 +618,12 @@ const setupAlerts = async ($: Ctx, target: string) => {
   }
 }
 
-const turnOffAlerts = async ($: Ctx) => {
+const adoTurnOff = async ($: Ctx) => {
   await setAlerts($, a => ({ ...a, busy: true, note: 'Turning off...' }))
   try {
-    await $.process.run(['schtasks', '/Delete', '/TN', JOB, '/F'])
+    await $.process.run(['schtasks', '/Delete', '/TN', ado.jobName, '/F'])
   } catch {}
-  await refreshAlerts($)
+  await adoRefresh($)
   await setAlerts($, a => ({ ...a, note: undefined }))
   $.ui.toast('Auto-sync is off.')
 }
@@ -862,8 +782,8 @@ export const register: Register = (on, options) => {
 
     void (async () => {
       try {
-        await refreshAlerts($)
-        if ((await read($, alerts)).state === 'on') await copyScript($)
+        await adoRefresh($)
+        if ((await read($, alerts)).state === 'on') await adoCopyScript($)
         await syncInbox($)
       } catch {}
     })()
@@ -891,6 +811,12 @@ export const register: Register = (on, options) => {
     return { text: 'TODO pane opened.' }
   })
 
+  // The same command as a plugin command file (commands/todo.md), which the menu lists before the plugin has started.
+  on('command.run', { command: 'todo-pane:todo' }, async $ => {
+    await openPane($)
+    return { text: 'TODO pane opened.' }
+  })
+
   on('prompt.submit', async ($, e, next) => {
     if (!e.command && !e.isMeta) {
       try {
@@ -913,7 +839,7 @@ export const register: Register = (on, options) => {
     const list = await read($, tasks)
     const a = await read($, alerts)
     const open = list.filter(t => !t.isDone).length
-    const settingsPath = await dataFile($, 'alerts.json')
+    const settingsPath = await dataFile($, ado.settingsFile)
     const suggestions = a.suggestions ?? []
 
     const greyButton = (key: string, label: string, hoverBg: string, onPress: () => void) => {
@@ -944,7 +870,7 @@ export const register: Register = (on, options) => {
             {settingsButton()}
             <Text> </Text>
             {greyButton('alerts-off', a.busy ? ' Working... ' : ' ⏻ Turn off ', DANGER_BG, () => {
-              if (!a.busy) void turnOffAlerts($)
+              if (!a.busy) void adoTurnOff($)
             })}
             {a.note ? <Text color="yellow"> {a.note}</Text> : null}
           </Box>
@@ -959,7 +885,7 @@ export const register: Register = (on, options) => {
             {a.hasSettings ? <Text> </Text> : null}
             {greyButton('alerts-on', a.busy ? ' Working... ' : ' ⏻ Turn on ', GO_BG, () => {
               if (a.busy) return
-              if (a.hasSettings) void setupAlerts($, '')
+              if (a.hasSettings) void adoSetup($, '')
               else void setAlertsDismissed($, false)
             })}
             {a.note ? <Text color="yellow"> {a.note}</Text> : null}
@@ -991,7 +917,7 @@ export const register: Register = (on, options) => {
               {suggestions.map((s: string) => (
                 <Button
                   key={`pick-${s}`}
-                  onPress={() => void setupAlerts($, s)}
+                  onPress={() => void adoSetup($, s)}
                   hover={{ scope: `pick-${s}`, backgroundColor: GO_BG, color: 'white' }}
                 >
                   <Text backgroundColor={PRIMARY_BG} color="white">{` ${s} `}</Text>
@@ -1005,14 +931,14 @@ export const register: Register = (on, options) => {
               label={suggestions.length > 0 ? 'Or type organization/project' : 'Organization/project'}
               placeholder="for example contoso/MyProject, then press Enter"
               submitLabel="set up"
-              onSubmit={(value: string) => void setupAlerts($, value)}
+              onSubmit={(value: string) => void adoSetup($, value)}
             />
           )}
           <Box>
             {a.hasSettings && (
               <Button
                 key="alerts-setup"
-                onPress={() => void setupAlerts($, '')}
+                onPress={() => void adoSetup($, '')}
                 hover={{ scope: 'alerts-setup', backgroundColor: GO_BG, color: 'white' }}
               >
                 <Text backgroundColor={PRIMARY_BG} color="white">
@@ -1044,7 +970,7 @@ export const register: Register = (on, options) => {
               <Button
                 key="refresh"
                 onPress={() => {
-                  if (!a.checking) void checkNow($)
+                  if (!a.checking) void adoCheckNow($)
                 }}
                 hover={{ scope: 'refresh', backgroundColor: PRIMARY_BG, color: 'white' }}
               >

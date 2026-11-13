@@ -2,7 +2,7 @@
 
 A TODO list pane for the Claude desktop app: add, edit, check off, remove and drag to reorder tasks, and press ▶ Start to write an opening prompt for a task into the prompt box. Optionally it watches Azure DevOps and adds what needs you.
 
-The pane opens only when you run `/todo`.
+The pane opens only when you run `/todo`. In a brand new session, before your first message, the menu lists it as `/todo-pane:todo`; after the first message plain `/todo` works too. Both do the same.
 
 > **Agents: to add, change, tick off or remove tasks, edit `%USERPROFILE%\.claude\todo-pane\tasks.json` and nothing else.** The pane refreshes by itself. Read "Editing the list from outside" below first; the bundled skill `update-todo` (in `skills/`) is the short version. Needs plugin version 0.3.0 or newer. If `tasks.json` does not exist, do not create it (see below).
 
@@ -16,7 +16,7 @@ You need the Claude desktop app and [Node.js](https://nodejs.org) (on your PATH)
 
 1. On the GitHub page of this repo press **Code → Download ZIP**.
 2. In the Claude app open **Settings → Plugins → Add** and import the ZIP file.
-3. Start a **new session** and type `/todo`. The pane opens.
+3. Start a **new session** and run `/todo-pane:todo` (plain `/todo` also works once you have sent your first message). The pane opens.
 4. Optional: press **Set up** in the pane to turn on the Azure DevOps Auto-sync (see "Auto-sync" below).
 
 Updating: download the new ZIP and import it again, then start a new session. Sessions that were already open keep the old version until you close them.
@@ -35,10 +35,10 @@ Do these steps in order and check each one. Never overwrite a file or setting th
    claude -p "reply ok" --max-turns 1 --debug --debug-file <log path>
    ```
    Then search the log for `todo-pane`. `hooks module todo-pane@inline loaded` means success. `did not load` followed by a reason means failure: report the reason to the user. The headless run uses the user's real data folder, so it must not create, edit or delete tasks.
-5. **Tell the user what to do next:** close and reopen Claude, start a new session and type `/todo`. The pane opens only on that command. You cannot open it for them. After the first run `%USERPROFILE%\.claude\todo-pane\tasks.json` exists and the agent rules in "Editing the list from outside" apply.
+5. **Tell the user what to do next:** close and reopen Claude, start a new session and run `/todo-pane:todo` (plain `/todo` works after the first message). The pane opens only on that command. You cannot open it for them. After the first run `%USERPROFILE%\.claude\todo-pane\tasks.json` exists and the agent rules in "Editing the list from outside" apply.
 6. **Auto-sync (only if the user asks).** Do not run the setup for them: it creates a Windows Task Scheduler job and needs the user's `az login`. Point them to the **Set up** button in the pane and to "Auto-sync: how it works" below.
 
-Troubleshooting: `/todo` is "not installed" or the pane does not open → the plugin did not load; repeat step 4 and read the reason in the log, and check that the path in `CLAUDE_CODE_PLUGIN_DIRS` points at the folder that contains `.claude-plugin`. Changes to the plugin files take effect only in new sessions.
+Troubleshooting: `/todo` and `/todo-pane:todo` are "not installed" or the pane does not open → the plugin did not load; repeat step 4 and read the reason in the log, and check that the path in `CLAUDE_CODE_PLUGIN_DIRS` points at the folder that contains `.claude-plugin`. Changes to the plugin files take effect only in new sessions.
 
 ## Auto-sync: how it works
 
@@ -147,6 +147,28 @@ Auto-sync tasks close and reopen by themselves when the source changes (see the 
 ### If the file is not valid
 
 The whole file is rejected, nothing is half-loaded: the pane keeps the list it had, shows a warning, and saves your text to `tasks.rejected.json`. The next change made in the pane writes a good `tasks.json` over the bad one. Reasons: not valid JSON (a half-written file counts), the top level is not an array, a task without `text`, an `id` that is not a positive whole number or is used twice, or an `isDone` that is not true or false. Fix the file and save again.
+
+## Code layout and adding another source (for developers)
+
+Azure DevOps is one *source*; the list itself knows nothing about it. A source is an external, read-only process (a script on a schedule) that writes an inbox file in the data folder. The pane only reads that file, never the source's API.
+
+```
+hooks/register.tsx             everything that needs the host `$`: file I/O, commands, ops, rendering,
+                               and the Azure DevOps section (ado* functions: setup, turn off, check now)
+hooks/core/tasks.ts            pure helpers for tasks.json
+hooks/core/reconcile.ts        pure: turns a source's inbox into task changes (add, reopen, auto-close, prune)
+hooks/integrations/ado.ts      the Azure DevOps source: file names, job name, which task keys it owns
+hooks/integrations/index.ts    SOURCES, the list of sources the pane reads
+scripts/ado-watch.ps1          the Azure DevOps watcher (read-only)
+```
+
+The inbox file is `{ "complete": true, "items": [ { "key", "title", "url", "rev", "baseline?" } ] }`. `complete: true` means `items` is everything currently open, so a task of that source that is missing gets closed. To add a source:
+
+1. Write the script that produces its inbox file (any language, read-only against the external system, runs on its own schedule).
+2. Add a descriptor next to `integrations/ado.ts` and list it in `integrations/index.ts`. Give its tasks a key prefix of its own (for example `jira:PROJ-12`) and set `owns` to match it. Auto-close and clean-up only touch keys a source owns, so one source can never close another's tasks.
+3. A key that no source owns is never closed automatically.
+
+Not generalised yet, on purpose: the setup screen, the scheduled job and the `alerts` state are still Azure DevOps only. Generalise them when the second source shows what is actually shared. Code files import each other without a file extension (`from './core/tasks'`); only code that does not use `$` can live outside `register.tsx`.
 
 ## Playbook (opening prompts)
 

@@ -37,6 +37,43 @@ export type Alerts = {
   note?: string
 }
 
+/** Source task key -> rev at the time the task was removed by hand. */
+export type Dismissed = Record<string, string>
+
+export type InboxItem = {
+  key: string
+  title: string
+  url: string
+  rev: string
+  /** Existed when the source was set up: tracked by the watcher, never added as a task. */
+  baseline?: boolean
+}
+
+/** What an external source writes to its inbox file. `complete` means `items` is the full current set. */
+export type Inbox = { complete?: boolean; items?: InboxItem[] }
+
+/**
+ * An integration is an external, read-only process that writes `inboxFile` in the data folder.
+ * The core only polls that file; it never calls the source's API.
+ */
+export type Source = {
+  id: string
+  /** Name shown to the user. */
+  label: string
+  /** Inbox file the source writes, in the data folder. */
+  inboxFile: string
+  /** The source's own settings file, in the data folder. */
+  settingsFile: string
+  /** Script in `scripts/` that produces the inbox. */
+  scriptFile: string
+  /** Name of the scheduled job that runs the script. */
+  jobName: string
+  /** Task keys this source owns. Auto-close and dismissal clean-up touch only these. */
+  owns: RegExp
+  /** Owned keys that must come back while still active, even after the user ticked them and they expired. */
+  keepOnUserExpire?: RegExp
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'todo-pane': { tasks: Shaped<Task[]>; alerts: Shaped<Alerts> }
