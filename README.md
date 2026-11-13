@@ -8,6 +8,44 @@ The pane opens only when you run `/todo`.
 
 Windows only for the alerts (they use Windows Task Scheduler and Windows notifications). The list itself works anywhere.
 
+## Setup
+
+### For humans (2 minutes)
+
+You need the Claude desktop app and [Node.js](https://nodejs.org) (on your PATH). For the Azure DevOps alerts you also need Windows and the [Azure CLI](https://aka.ms/installazurecliwindows) signed in with `az login`.
+
+1. Download this repo (`git clone` it, or "Download ZIP" and unzip) to a folder that stays put, for example `C:\Users\<you>\claude-plugins\todo-pane`.
+2. Open `%USERPROFILE%\.claude\settings.json` and add the folder to the `env` block:
+   ```json
+   {
+     "env": {
+       "CLAUDE_CODE_PLUGIN_DIRS": "C:\\Users\\<you>\\claude-plugins\\todo-pane"
+     }
+   }
+   ```
+   If `CLAUDE_CODE_PLUGIN_DIRS` is already there, keep its current entries and add this folder the same way they are listed.
+3. Close and reopen Claude, start a **new session** and type `/todo`. The pane opens.
+4. Optional: press **Set up** in the pane to turn on the Azure DevOps alerts (see "Alerts" below).
+
+Updating: pull or re-download the repo, then start a new session. Sessions that were already open keep the old version until you close them.
+
+### For AI agents (set this up on the user's machine)
+
+Do these steps in order and check each one. Never overwrite a file or setting the user already has; merge into it. Do not touch `%USERPROFILE%\.claude\todo-pane\` (the user's data: `tasks.json`, `alerts.json`, ...).
+
+1. **Check prerequisites.** `node --version` must work (the plugin starts `node` for its file watcher and prompt-title hook). `az --version` is needed only if the user wants alerts. The plugin loads only in the Claude desktop app (it is a pane plugin); it does nothing in a plain terminal session. If a prerequisite is missing, tell the user and stop; do not install software without asking.
+2. **Get the files.** If the user has no local copy, clone this repository into a stable folder of their choice (ask, or propose `%USERPROFILE%\claude-plugins\todo-pane`; not inside a temp or session folder). The folder you want is the one containing `.claude-plugin\plugin.json`. Check that `version` in that file is 0.3.0 or newer.
+3. **Register the folder.** Read `%USERPROFILE%\.claude\settings.json` (it may not exist, or may have no `env` block). Set `env.CLAUDE_CODE_PLUGIN_DIRS` to the plugin folder's absolute path, with `\\` escaped in JSON. If the variable already has a value, keep it and add the new path in the same format as the existing entries (ask the user if you cannot tell the separator). Keep every other key in the file unchanged and keep the file valid JSON. Show the user the change.
+4. **Verify it loads, without opening a session of theirs.** Run a throwaway headless session and read its debug log:
+   ```
+   claude -p "reply ok" --max-turns 1 --debug --debug-file <log path>
+   ```
+   Then search the log for `todo-pane`. `hooks module todo-pane@inline loaded` means success. `did not load` followed by a reason means failure: report the reason to the user. The headless run uses the user's real data folder, so it must not create, edit or delete tasks.
+5. **Tell the user what to do next:** close and reopen Claude, start a new session and type `/todo`. The pane opens only on that command. You cannot open it for them. After the first run `%USERPROFILE%\.claude\todo-pane\tasks.json` exists and the agent rules in "Editing the list from outside" apply.
+6. **Alerts (only if the user asks).** Do not run the setup for them: it creates a Windows Task Scheduler job and needs the user's `az login`. Point them to the **Set up** button in the pane and to "Alerts: how they work" below.
+
+Troubleshooting: `/todo` is "not installed" or the pane does not open → the plugin did not load; repeat step 4 and read the reason in the log, and check that the path in `CLAUDE_CODE_PLUGIN_DIRS` points at the folder that contains `.claude-plugin`. Changes to the plugin files take effect only in new sessions.
+
 ## Alerts: how they work
 
 On first open the pane offers to set up alerts. Setup does this, after you press Set up:
