@@ -692,7 +692,7 @@ const setupAlerts = async ($: Ctx, target: string) => {
     await refreshAlerts($)
     await setAlerts($, a => ({ ...a, note: undefined, dismissed: undefined }) as Alerts)
     await syncInbox($)
-    $.ui.toast('Auto Refresh is on. A test notification was sent.')
+    $.ui.toast('Auto-sync is on. A test notification was sent.')
   } catch (err) {
     await note(`Setup failed: ${String(err)}`.slice(0, 200))
   }
@@ -705,7 +705,7 @@ const turnOffAlerts = async ($: Ctx) => {
   } catch {}
   await refreshAlerts($)
   await setAlerts($, a => ({ ...a, note: undefined }))
-  $.ui.toast('Auto Refresh is off.')
+  $.ui.toast('Auto-sync is off.')
 }
 
 /* ---------------------------------------------------- list.tsx messages */
@@ -940,7 +940,7 @@ export const register: Register = (on, options) => {
         return (
           <Box key="alerts-on">
             <Text color="green">● </Text>
-            <Text dimColor>Auto Refresh </Text>
+            <Text dimColor>Auto-sync </Text>
             {settingsButton()}
             <Text> </Text>
             {greyButton('alerts-off', a.busy ? ' Working... ' : ' ⏻ Turn off ', DANGER_BG, () => {
@@ -954,7 +954,7 @@ export const register: Register = (on, options) => {
         return (
           <Box key="alerts-idle">
             <Text color="gray">● </Text>
-            <Text dimColor>Auto Refresh </Text>
+            <Text dimColor>Auto-sync </Text>
             {a.hasSettings ? settingsButton() : null}
             {a.hasSettings ? <Text> </Text> : null}
             {greyButton('alerts-on', a.busy ? ' Working... ' : ' ⏻ Turn on ', GO_BG, () => {
