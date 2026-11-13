@@ -14,20 +14,14 @@ Windows only for the alerts (they use Windows Task Scheduler and Windows notific
 
 You need the Claude desktop app and [Node.js](https://nodejs.org) (on your PATH). For the Azure DevOps alerts you also need Windows and the [Azure CLI](https://aka.ms/installazurecliwindows) signed in with `az login`.
 
-1. Download this repo (`git clone` it, or "Download ZIP" and unzip) to a folder that stays put, for example `C:\Users\<you>\claude-plugins\todo-pane`.
-2. Open `%USERPROFILE%\.claude\settings.json` and add the folder to the `env` block:
-   ```json
-   {
-     "env": {
-       "CLAUDE_CODE_PLUGIN_DIRS": "C:\\Users\\<you>\\claude-plugins\\todo-pane"
-     }
-   }
-   ```
-   If `CLAUDE_CODE_PLUGIN_DIRS` is already there, keep its current entries and add this folder the same way they are listed.
-3. Close and reopen Claude, start a **new session** and type `/todo`. The pane opens.
+1. On the GitHub page of this repo press **Code → Download ZIP**.
+2. In the Claude app open **Settings → Plugins → Add** and import the ZIP file.
+3. Start a **new session** and type `/todo`. The pane opens.
 4. Optional: press **Set up** in the pane to turn on the Azure DevOps alerts (see "Alerts" below).
 
-Updating: pull or re-download the repo, then start a new session. Sessions that were already open keep the old version until you close them.
+Updating: download the new ZIP and import it again, then start a new session. Sessions that were already open keep the old version until you close them.
+
+If the import is refused, the ZIP must have the `.claude-plugin` folder at its top level. GitHub's ZIP puts everything inside one extra folder; unzip it and zip the inside of that folder instead. Or use the manual route in the agent steps below.
 
 ### For AI agents (set this up on the user's machine)
 
