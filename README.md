@@ -4,6 +4,8 @@ A TODO list pane for the Claude desktop app: add, edit, check off, remove and dr
 
 The pane opens when you run `/todo`. In a brand new session, before your first message, the menu lists it as `/todo-pane:todo`; after the first message plain `/todo` works too. Both do the same.
 
+When the automatic once-a-minute sync adds new tasks (a new item, or a closed one reopened by new activity), a Windows notification headed "Claude" appears ("New on your list", the first task, "(+N more)"), plus the same line in the session for 10 seconds; nothing during `quietHours` in alerts.json. Only the session whose save added the tasks alerts, once per sync. The first sync after a session starts, ↻ refresh, setup and settings changes do not alert. Each sync tick writes `heartbeat.txt` (epoch ms) to the data folder; while it is under 150 seconds old the scheduled job skips its own new-item notification (its sign-in notification is unchanged), so you get one alert, not two.
+
 > **Agents: to add, change, tick off or remove tasks, edit `%USERPROFILE%\.claude\todo-pane\tasks.json` and nothing else.** The pane refreshes by itself. Read "Editing the list from outside" below first; the bundled skill `update-todo` (in `skills/`) is the short version. Needs plugin version 0.3.0 or newer. If `tasks.json` does not exist, do not create it (see below).
 
 Windows only for Auto-sync (they use Windows Task Scheduler and Windows notifications). The list itself works anywhere.
@@ -68,7 +70,7 @@ What gets added, and when it closes by itself:
 |---|---|
 | A work item is assigned to you | it is closed, resolved or reassigned |
 | New bug/task under a ticket assigned to you | it is closed |
-| You are mentioned in a work item comment | you reply after the mention |
+| You are mentioned in a work item comment (your own comment that names you counts too, as a reminder to yourself) | you reply after the mention |
 | Someone replied on your PR threads | no thread is waiting on your reply |
 | Your PR has a failing build (status check or build validation policy) | the build is green again |
 | You are the Tester (`Custom.Tester`) of a ticket whose State is Resolved (ready to test) | the ticket leaves Resolved, or you are no longer the tester. Skipped when the ticket is also assigned to you (the assigned task covers it) |
@@ -80,7 +82,7 @@ Removing (✕) an Auto-sync task makes it stay gone until its source has new act
 
 Everything personal lives outside the plugin, so plugin updates never overwrite it:
 
-- `%USERPROFILE%\.claude\todo-pane\alerts.json` - settings. Fields: `organization`, `project`, `repository` (empty means all repos), `intervalMinutes` (applies when alerts are set up again), `windowDays`, `events` (set any of `assigned`, `prReplies`, `reviewer`, `failedBuild`, `mention`, `childItems`, `tester` to false), `keepResolvedDays` (how long tasks closed by the watcher stay listed as "resolved" before they are removed, default 3, 0 removes them at the next sync), `ignoreIds` (ticket or PR numbers to never alert on), `quietHours` (like `"22:00-07:00"`: no notification, the list still updates).
+- `%USERPROFILE%\.claude\todo-pane\alerts.json` - settings. Saving the file applies every setting at once: the plugin runs the check and re-imports the list right away instead of waiting for the next scheduled run. Fields: `organization`, `project`, `repository` (empty means all repos), `intervalMinutes` (1 to 1439; the plugin recreates the scheduled job when the value differs from the job's, and checks it at every session start), `windowDays`, `events` (set any of `assigned`, `prReplies`, `reviewer`, `failedBuild`, `mention`, `childItems`, `tester` to false), `keepResolvedDays` (how long tasks closed by the watcher stay listed as "resolved" before they are removed, default 3, 0 removes them at the next sync), `ignoreIds` (ticket or PR numbers to never alert on), `quietHours` (like `"22:00-07:00"`: no notification, the list still updates).
 - `%USERPROFILE%\.claude\todo-pane\watch.log` - what the last runs did.
 - Task Scheduler, job `TodoPaneAdoWatch` - or use the pane's ⏻ Turn off button.
 - Skill `update-todo` (in `skills/`) - ships with the plugin; teaches Claude to edit `tasks.json` for you ("mark ticket 12345 done in my todo"). Nothing to configure.

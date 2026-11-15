@@ -83,6 +83,21 @@ export const reconcile = (
 }
 
 /**
+ * Tasks a reconcile step brought to the user's attention: keys absent from `before`, and closed
+ * tasks it reopened because the source has new activity (a changed rev). A reopen with the same
+ * rev (an auto-closed item that came back) does not count.
+ */
+export const newlyCreated = (before: Task[], after: Task[]): Task[] => {
+  const old = new Map(before.filter(t => t.key).map(t => [t.key as string, t]))
+  return after.filter(t => {
+    if (!t.key) return false
+    const was = old.get(t.key)
+    if (!was) return true
+    return was.isDone && !t.isDone && was.rev !== t.rev
+  })
+}
+
+/**
  * Drops this source's dismissals whose item is gone, so a reused key isn't hidden forever.
  * Dismissals of other sources are kept.
  */

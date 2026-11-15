@@ -47,6 +47,8 @@ $SettingsPath = Join-Path $Dir 'alerts.json'
 $StatePath = Join-Path $Dir 'watch-state.json'
 $InboxPath = Join-Path $Dir 'inbox.json'
 $LogPath = Join-Path $Dir 'watch.log'
+$HeartbeatPath = Join-Path $Dir 'heartbeat.txt'
+$HeartbeatFreshSeconds = 150
 
 # ---------------------------------------------------------------------------------------------
 # Local helpers
@@ -338,19 +340,19 @@ if (Test-EventEnabled 'mention') { Invoke-Section 'mention' {
     foreach ($id in $ids) {
         $c = Get-Ado "$Base/$Proj/_apis/wit/workItems/$id/comments?api-version=7.0-preview.3"
         $comments = @($c.comments | Sort-Object -Property id)
-        # The latest comment by someone else that names me; any later comment of mine answers it.
+        # The latest comment that names me (mine included, as a reminder to myself); any later comment of mine answers it.
         $mentionIdx = -1
         for ($i = 0; $i -lt $comments.Count; $i++) {
             $text = [string]$comments[$i].text
             $namesMe = ($text -match [regex]::Escape($myId)) -or ($myName -and ($text -match [regex]::Escape($myName)))
-            if ($comments[$i].createdBy.id -ne $myId -and $namesMe) { $mentionIdx = $i }
+            if ($namesMe) { $mentionIdx = $i }
         }
         if ($mentionIdx -lt 0) { continue }
         $answered = $false
         for ($i = $mentionIdx + 1; $i -lt $comments.Count; $i++) { if ($comments[$i].createdBy.id -eq $myId) { $answered = $true } }
         if ($answered) { continue }
         $w = @(Get-WorkItems @($id))[0]
-        Add-Item "wi-mention:$id" 'mention' "$($comments[$mentionIdx].createdBy.displayName) mentioned you on $($w.fields.'System.WorkItemType') ${id}: $($w.fields.'System.Title')" (Get-WorkItemUrl $id) ([string]$comments[$mentionIdx].id)
+        Add-Item "wi-mention:$id" 'mention' "$(if ($comments[$mentionIdx].createdBy.id -eq $myId) { 'You mentioned yourself' } else { "$($comments[$mentionIdx].createdBy.displayName) mentioned you" }) on $($w.fields.'System.WorkItemType') ${id}: $($w.fields.'System.Title')" (Get-WorkItemUrl $id) ([string]$comments[$mentionIdx].id)
     }
 } }
 
@@ -503,11 +505,22 @@ if ($failedSections -and -not $firstRun) {
 }
 Write-JsonAtomic $StatePath ([ordered]@{ seen = $newSeen; baseline = $newBase; updated = (Get-Date).ToString('o') })
 
-if ($newOnes.Count -gt 0 -and -not $quiet) {
+# An open Claude session writes heartbeat.txt (epoch ms) every sync and raises its own alert for
+# the tasks it adds, so this toast is skipped while that heartbeat is fresh.
+$sessionAlive = $false
+try {
+    if (Test-Path $HeartbeatPath) {
+        $beat = [int64]((Get-Content -Path $HeartbeatPath -Raw).Trim())
+        $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $sessionAlive = (($nowMs - $beat) -ge 0 -and ($nowMs - $beat) -lt ($HeartbeatFreshSeconds * 1000))
+    }
+} catch {}
+
+if ($newOnes.Count -gt 0 -and -not $quiet -and -not $sessionAlive) {
     $first = $newOnes[0]
     $title = if ($newOnes.Count -eq 1) { 'New on your list' } else { "$($newOnes.Count) new on your list" }
     $body = $first.title
     if ($newOnes.Count -gt 1) { $body = $body + " (+$($newOnes.Count - 1) more)" }
     [void](Show-Toast $title $body $first.url)
 }
-Write-Log ("ok: {0} open, {1} new, first={2}, errors={3}" -f $out.Count, $newOnes.Count, $firstRun, $errors.Count)
+Write-Log ("ok: {0} open, {1} new, first={2}, errors={3}, sessionAlive={4}" -f $out.Count, $newOnes.Count, $firstRun, $errors.Count, $sessionAlive)

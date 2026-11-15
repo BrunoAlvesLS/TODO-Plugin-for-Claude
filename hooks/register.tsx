@@ -7,6 +7,7 @@ import {
   DAY_MS,
   DEFAULT_KEEP_RESOLVED_DAYS,
   expiredUserTasks,
+  newlyCreated,
   pruneDismissedKeys,
   reconcile,
 } from './core/reconcile'
@@ -105,9 +106,9 @@ const setAlertsDismissed = ($: Ctx, dismissed: boolean) => {
 const TASKS_FILE = 'tasks.json'
 const REJECTED_FILE = 'tasks.rejected.json'
 
-/** Child process that prints "changed" once, 150 ms after tasks.json stops changing. */
+/** Child process that prints "changed" (tasks.json) or "alerts-changed" (alerts.json) 150 ms after that file stops changing. */
 const WATCH_JS =
-  "const fs=require('fs');const d=process.argv[1];let t;fs.watch(d,(e,f)=>{if(f==='tasks.json'){clearTimeout(t);t=setTimeout(()=>console.log('changed'),150)}});console.log('watching')"
+  "const fs=require('fs');const d=process.argv[1];const t={};const m={'tasks.json':'changed','alerts.json':'alerts-changed'};fs.watch(d,(e,f)=>{if(m[f]){clearTimeout(t[f]);t[f]=setTimeout(()=>console.log(m[f]),150)}});console.log('watching')"
 
 /** What this plugin last wrote to tasks.json: a change event for exactly this text is its own save. */
 let lastWritten = ''
@@ -354,9 +355,75 @@ const pruneDismissed = async (
   return kept
 }
 
-const syncSource = async ($: Ctx, source: Source) => {
+/** True inside alerts.json's quietHours ("22:00-07:00", may wrap midnight); same rule as ado-watch.ps1. */
+const isQuietNow = (quietHours: unknown, now: number): boolean => {
+  const m = /^(\d\d):(\d\d)-(\d\d):(\d\d)$/.exec(String(quietHours ?? ''))
+  if (!m) return false
+  const d = new Date(now)
+  const at = d.getHours() * 60 + d.getMinutes()
+  const from = Number(m[1]) * 60 + Number(m[2])
+  const to = Number(m[3]) * 60 + Number(m[4])
+  return from <= to ? at >= from && at < to : at >= from || at < to
+}
+
+const ALERT_MS = 10_000
+const ALERT_TITLE = 'New on your list'
+const HEARTBEAT_FILE = 'heartbeat.txt'
+
+/** alert.log (last 200 lines kept): time, session id, and why a banner could not be raised. */
+const logAlert = async ($: Ctx, line: string) => {
+  try {
+    const path = await dataFile($, 'alert.log')
+    let session = '?'
+    try {
+      session = String(await $.session.id())
+    } catch {}
+    const old = (await readText($, path)).split('\n').filter(Boolean).slice(-199)
+    await $.fs.write(path, `${[...old, `${new Date().toISOString()} session=${session} ${line}`].join('\n')}\n`)
+  } catch {}
+}
+
+/**
+ * A Windows banner headed "Claude" plus the same line in the session. The text reaches the
+ * script only through environment variables, which it XML-escapes. Fire and forget.
+ */
+const raiseAlert = ($: Ctx, title: string, body: string) => {
+  $.process
+    .run(psArgs(['-File', `${$.plugin.root}/scripts/claude-toast.ps1`]), {
+      env: { TODO_TOAST_TITLE: title.slice(0, 200), TODO_TOAST_BODY: body.slice(0, 400) },
+    })
+    .then((r: { exitCode: number; stderr: string }) => {
+      if (r.exitCode) return logAlert($, `toast script exit=${r.exitCode} ${String(r.stderr).slice(0, 300)}`)
+    })
+    .catch((err: unknown) => logAlert($, `toast script failed to run: ${String(err)}`))
+  $.ui.toast(`${title}: ${body}`.slice(0, 200), { timeoutMs: ALERT_MS })
+}
+
+/** One alert for the tasks a sync created, outside alerts.json's quietHours. */
+const alertNewTasks = async ($: Ctx, created: Task[]) => {
+  if (!created.length) return
+  try {
+    const cfg = await readJson($, await dataFile($, ado.settingsFile))
+    if (isQuietNow(cfg?.quietHours, await $.clock.now())) return
+    const first = created[0]?.text ?? ''
+    const more = created.length > 1 ? ` (+${created.length - 1} more)` : ''
+    raiseAlert($, ALERT_TITLE, `${first}${more}`)
+  } catch (err) {
+    await logAlert($, `alert threw: ${String(err)}`)
+  }
+}
+
+/** Tells scripts/ado-watch.ps1 that a session is syncing and will alert, so the job skips its own toast. */
+const writeHeartbeat = async ($: Ctx) => {
+  try {
+    await $.fs.write(await dataFile($, HEARTBEAT_FILE), String(await $.clock.now()))
+  } catch {}
+}
+
+/** Returns the tasks this session's own write added (see newlyCreated); none when nothing was written. */
+const syncSource = async ($: Ctx, source: Source): Promise<Task[]> => {
   const inbox = (await readJson($, await dataFile($, source.inboxFile))) as Inbox | undefined
-  if (!inbox || typeof inbox !== 'object') return
+  if (!inbox || typeof inbox !== 'object') return []
   const now = await $.clock.now()
   const keepMs = await readKeepResolvedMs($)
   const current = await read($, tasks)
@@ -371,15 +438,42 @@ const syncSource = async ($: Ctx, source: Source) => {
     await $.store.set('dismissed', dismissed)
   }
   // Skip the write (and its backup) on the usual no-change tick.
-  if (JSON.stringify(next) !== JSON.stringify(current)) {
-    await mutate($, l => reconcile(l, inbox, source, now, keepMs, dismissed))
-  }
+  if (JSON.stringify(next) === JSON.stringify(current)) return []
+  // Diffed against the fresh list the write starts from: a task another session already
+  // added is not new here, so only the session that wrote it alerts.
+  let created: Task[] = []
+  await mutate($, l => {
+    const result = reconcile(l, inbox, source, now, keepMs, dismissed)
+    created = newlyCreated(l, result)
+    return result
+  })
+  return created
 }
 
-const syncInbox = async ($: Ctx) => {
-  // Also the fallback for the file watcher: picks up an outside edit of tasks.json within a minute.
-  await reloadFromFile($)
-  for (const source of SOURCES) await syncSource($, source)
+let syncing: Promise<void> = Promise.resolve()
+/** The first sync after session start imports the backlog the scheduled job already announced. */
+let firstSyncDone = false
+
+/**
+ * Imports every source's inbox. Runs one at a time. Only the scheduled tick passes
+ * `alert`, and never on the first sync of the session.
+ */
+const syncInbox = ($: Ctx, options: { alert?: boolean } = {}): Promise<void> => {
+  const run = syncing.then(async () => {
+    const mayAlert = Boolean(options.alert) && firstSyncDone
+    try {
+      if (options.alert) await writeHeartbeat($)
+      // Also the fallback for the file watcher: picks up an outside edit of tasks.json within a minute.
+      await reloadFromFile($)
+      const created: Task[] = []
+      for (const source of SOURCES) created.push(...(await syncSource($, source)))
+      if (mayAlert) await alertNewTasks($, created)
+    } finally {
+      firstSyncDone = true
+    }
+  })
+  syncing = run.catch(() => {})
+  return run
 }
 
 /* ----------------------------------------------------- links, sessions */
@@ -581,6 +675,73 @@ const createJob = ($: Ctx, script: string, everyMinutes: number) =>
     '/F',
   ])
 
+/** The job's repeat interval in minutes (from its XML, e.g. PT10M), or undefined when it cannot be read. */
+const readJobIntervalMinutes = async ($: Ctx): Promise<number | undefined> => {
+  try {
+    const out = await $.process.run(['schtasks', '/Query', '/TN', ado.jobName, '/XML'])
+    const m = /<Interval>P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?<\/Interval>/.exec(String(out.stdout))
+    if (!m) return undefined
+    return Number(m[1] ?? 0) * 1440 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0)
+  } catch {
+    return undefined
+  }
+}
+
+/** Keeps the scheduled job's interval equal to intervalMinutes in alerts.json; only acts while Auto-sync is on. */
+let syncingInterval = false
+const adoSyncInterval = async ($: Ctx) => {
+  if (syncingInterval) return
+  syncingInterval = true
+  try {
+    if (!(await adoJobExists($))) return
+    const settings = await readJson($, await dataFile($, ado.settingsFile))
+    if (!settings) return
+    const raw = settings.intervalMinutes
+    const wanted = raw === undefined ? DEFAULT_INTERVAL_MINUTES : Math.floor(Number(raw))
+    if (!(wanted >= 1 && wanted <= 1439)) {
+      $.ui.toast('intervalMinutes in alerts.json must be a whole number from 1 to 1439; the job was left unchanged.')
+      return
+    }
+    if ((await readJobIntervalMinutes($)) === wanted) return
+    const made = await createJob($, await adoCopyScript($), wanted)
+    $.ui.toast(
+      made.exitCode === 0
+        ? `Auto-sync now runs every ${wanted} minute(s).`
+        : `Could not change the Auto-sync interval: ${made.stderr || made.stdout}`.slice(0, 160),
+    )
+  } catch {
+  } finally {
+    syncingInterval = false
+  }
+}
+
+/**
+ * alerts.json was saved: apply every setting now instead of at the next scheduled run.
+ * The job interval is re-synced, the watcher runs once so events/ignoreIds/windowDays/repository/quietHours
+ * take effect, and the inbox is re-imported so keepResolvedDays does too. Setup and refresh do this themselves.
+ */
+let applyingSettings = false
+const adoApplySettings = async ($: Ctx) => {
+  if (applyingSettings || (await read($, alerts)).busy) return
+  applyingSettings = true
+  try {
+    // Skips when the file is exactly what was last applied, so opening the pane costs nothing unless it changed
+    // (including edits made while the plugin was not running).
+    const text = await readText($, await dataFile($, ado.settingsFile))
+    if (text === ((await $.store.get('alertsApplied')) as string | undefined)) return
+    await adoRefresh($)
+    if ((await read($, alerts)).state === 'on') {
+      await adoSyncInterval($)
+      await runWatch($, await adoCopyScript($))
+    }
+    await syncInbox($)
+    await $.store.set('alertsApplied', text)
+  } catch {
+  } finally {
+    applyingSettings = false
+  }
+}
+
 /** `target` is "organization/project"; ignored when alerts.json already exists. */
 const adoSetup = async ($: Ctx, target: string) => {
   const note = (text: string) => setAlerts($, a => ({ ...a, busy: false, note: text }))
@@ -768,7 +929,10 @@ const runOp = async ($: Ctx, msg: ListMessage, options: Record<string, unknown>)
 
 /* ------------------------------------------------------------ register */
 
-const openPane = ($: Ctx) => $.ui.open({ id: PANE, title: PANE_TITLE })
+const openPane = async ($: Ctx) => {
+  await $.ui.open({ id: PANE, title: PANE_TITLE })
+  void adoApplySettings($).catch(() => {})
+}
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
@@ -784,11 +948,12 @@ export const register: Register = (on, options) => {
       try {
         await adoRefresh($)
         if ((await read($, alerts)).state === 'on') await adoCopyScript($)
+        await adoApplySettings($)
         await syncInbox($)
       } catch {}
     })()
     $.clock.every(SYNC_MS, () => {
-      void syncInbox($).catch(() => {})
+      void syncInbox($, { alert: true }).catch(() => {})
     })
 
     // Push updates: a small child process reports edits of tasks.json, so the panel refreshes at once.
@@ -796,9 +961,9 @@ export const register: Register = (on, options) => {
       try {
         const dir = await dataDir($)
         for await (const piece of $.process.spawn({ argv: ['node', '-e', WATCH_JS, dir] })) {
-          if (piece.stream === 'stdout' && piece.text.includes('changed')) {
-            void reloadFromFile($).catch(() => {})
-          }
+          if (piece.stream !== 'stdout') continue
+          if (piece.text.includes('alerts-changed')) void adoApplySettings($).catch(() => {})
+          if (/(^|\s)changed/.test(piece.text)) void reloadFromFile($).catch(() => {})
         }
       } catch {}
     })()
