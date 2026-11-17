@@ -568,6 +568,7 @@ const defaultSettings = (organization: string, project: string) => ({
     prReplies: true,
     reviewer: true,
     failedBuild: true,
+    mergeConflict: true,
     mention: true,
     childItems: true,
     tester: true,
