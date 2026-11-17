@@ -356,7 +356,7 @@ if (Test-EventEnabled 'mention') { Invoke-Section 'mention' {
     }
 } }
 
-# 4. My PRs: replies and failing builds
+# 4. My PRs: replies, failing builds and merge conflicts
 $myPrs = @()
 if ((Test-EventEnabled 'prReplies') -or (Test-EventEnabled 'failedBuild') -or (Test-EventEnabled 'mergeConflict')) { Invoke-Section 'myPrs' {
     $r = Get-Ado "$Base/$Proj/_apis/git/pullrequests?searchCriteria.creatorId=$myId&searchCriteria.status=active&`$top=100&api-version=7.1"
@@ -384,9 +384,19 @@ foreach ($pr in $myPrs) {
             Add-Item "pr-reply:$prId" 'prReply' "PR !${prId}: $count thread(s) from $who need your reply - $($pr.title)" $prUrl ([string]$maxId)
         }
     } }
-    if ((Test-EventEnabled 'mergeConflict') -and $pr.mergeStatus -eq 'conflicts') {
-        $srcCommit = [string]$pr.lastMergeSourceCommit.commitId
-        Add-Item "pr-conflict:$prId" 'conflict' "PR !${prId}: merge conflicts with $(($pr.targetRefName -replace '^refs/heads/','')) - $($pr.title)" $prUrl $srcCommit
+    if (Test-EventEnabled 'mergeConflict') {
+        $conflictKey = "pr-conflict:$prId"
+        $conflictRev = [string]$pr.lastMergeSourceCommit.commitId + '/' + [string]$pr.lastMergeTargetCommit.commitId
+        $conflictTitle = "PR !${prId}: merge conflicts with $(($pr.targetRefName -replace '^refs/heads/','')) - $($pr.title)"
+        if ($pr.mergeStatus -eq 'conflicts') {
+            Add-Item $conflictKey 'conflict' $conflictTitle $prUrl $conflictRev
+        } elseif ($pr.mergeStatus -eq 'queued' -or $pr.mergeStatus -eq 'notSet') {
+            # ADO reports queued/notSet while it recomputes the merge; keep an open conflict open instead of flapping.
+            $prevState = Read-Json $StatePath $null
+            if ($prevState -and $prevState.seen -and ($prevState.seen.PSObject.Properties.Name -contains $conflictKey)) {
+                Add-Item $conflictKey 'conflict' $conflictTitle $prUrl ([string]$prevState.seen.$conflictKey)
+            }
+        }
     }
     if (Test-EventEnabled 'failedBuild') { Invoke-Section "failedBuild $prId" {
         # Latest status per context; coverage checks are informational and ignored.
