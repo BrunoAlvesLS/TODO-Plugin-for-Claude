@@ -79,11 +79,11 @@ const COLOR = {
   resume: '#d08a1f',
   start: '#7a5bd0',
   statusHover: '#4f6d8f',
-  here: '#4ec468',
+  here: '#e05dd0',
 } as const
 
 /** Shown instead of Resume on the task that belongs to the chat this pane is in. */
-const HERE_LABEL = '● This chat'
+const HERE_LABEL = '◉'
 
 /** Label and colour of the status shown on each row. */
 const STATUS_BADGE: Record<Status, { label: string; color: string }> = {
@@ -309,7 +309,7 @@ const List: ClientModule<Props, State> = (props, surface) => {
         </Box>
       ) : null}
       {isHere(t) ? (
-        <Text key={`here-${mode}-${t.id}`} color={COLOR.here}>
+        <Text key={`here-${mode}-${t.id}`} color="white">
           {HERE_LABEL}
         </Text>
       ) : t.isDone || t.inProgress
@@ -347,7 +347,7 @@ const List: ClientModule<Props, State> = (props, surface) => {
         width="100%"
         flexDirection="column"
         borderStyle="round"
-        borderColor={mode === 'ghost' ? 'cyan' : 'gray'}
+        borderColor={mode === 'ghost' ? 'cyan' : isHere(t) ? COLOR.here : 'gray'}
         paddingX={1}
         backgroundColor={mode === 'ghost' ? COLOR.ghostBg : COLOR.rowBg}
       >
