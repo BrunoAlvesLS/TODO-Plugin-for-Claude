@@ -83,7 +83,6 @@ const COLOR = {
 } as const
 
 /** Shown instead of Resume on the task that belongs to the chat this pane is in. */
-const HERE_LABEL = '◉'
 
 /** Label and colour of the status shown on each row. */
 const STATUS_BADGE: Record<Status, { label: string; color: string }> = {
@@ -161,7 +160,7 @@ const List: ClientModule<Props, State> = (props, surface) => {
   const isHere = (t: Item): boolean => !!props.currentSessionId && t.sessionId === props.currentSessionId
   const stackedFor = (t: Item): boolean => {
     const label = STATUS_BADGE[statusOf(t, props.now, props.newWindowMs)].label.length
-    const needed = GUTTER + label + 4 + (t.url ? 9 : 0) + (isHere(t) ? HERE_LABEL.length : 10)
+    const needed = GUTTER + label + 4 + (t.url ? 9 : 0) + (isHere(t) ? 2 : 10)
     return needed + 2 > surface.columns - 4
   }
   const linesOf = tasks.map(t => (cur.editId === t.id ? [''] : wrap(t.text, textWidth)))
@@ -308,11 +307,7 @@ const List: ClientModule<Props, State> = (props, surface) => {
           <Text> </Text>
         </Box>
       ) : null}
-      {isHere(t) ? (
-        <Text key={`here-${mode}-${t.id}`} color="white">
-          {HERE_LABEL}
-        </Text>
-      ) : t.isDone || t.inProgress
+      {isHere(t) ? null : t.isDone || t.inProgress
         ? actionButton(t.id, `rs-${mode}`, ' ↩ Resume ', COLOR.resume, () =>
             send({ op: 'resume', id: t.id }),
           )
@@ -322,14 +317,18 @@ const List: ClientModule<Props, State> = (props, surface) => {
     </Box>
   )
 
+  const hereMark = (t: Item, mode: RowMode) =>
+    isHere(t) ? <Text key={`here-${mode}-${t.id}`} color="white">{'◉ '}</Text> : null
+
   const taskActions = (t: Item, mode: RowMode) =>
     stackedFor(t) ? (
       <Box flexDirection="column">
-        <Box>{statusControl(t, mode)}</Box>
+        <Box>{hereMark(t, mode)}{statusControl(t, mode)}</Box>
         {openAndStart(t, mode)}
       </Box>
     ) : (
       <Box>
+        {hereMark(t, mode)}
         {statusControl(t, mode)}
         {openAndStart(t, mode)}
       </Box>
@@ -347,7 +346,7 @@ const List: ClientModule<Props, State> = (props, surface) => {
         width="100%"
         flexDirection="column"
         borderStyle="round"
-        borderColor={mode === 'ghost' ? 'cyan' : isHere(t) ? COLOR.here : 'gray'}
+        borderColor={mode === 'ghost' ? 'cyan' : 'gray'}
         paddingX={1}
         backgroundColor={mode === 'ghost' ? COLOR.ghostBg : COLOR.rowBg}
       >
@@ -381,6 +380,7 @@ const List: ClientModule<Props, State> = (props, surface) => {
                 <Text
                   key={`l-${t.id}-${i}`}
                   dimColor={dim}
+                  bold={isHere(t)}
                   strikethrough={t.isDone}
                   wrap="truncate-end"
                 >
