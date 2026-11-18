@@ -12,7 +12,7 @@ type Item = {
   closedBy?: string
   sessionId?: string
 }
-type Props = { tasks: Item[]; now: number }
+type Props = { tasks: Item[]; now: number; newWindowMs?: number; currentSessionId?: string }
 
 type Status = 'new' | 'todo' | 'progress' | 'done'
 
@@ -50,7 +50,8 @@ const IDLE: State = {
   statusId: null,
 }
 
-const NEW_WINDOW_MS = 24 * 60 * 60 * 1000
+/** How long a task shows the New tag when the pane passes no newTaskHours setting. */
+const DEFAULT_NEW_WINDOW_MS = 24 * 60 * 60 * 1000
 /** A left press in the first columns of a row (the ⠇ grip) starts a drag. */
 const GRIP_COLUMNS = 4
 /** Indents the action line so it lines up with the task text. */
@@ -78,7 +79,11 @@ const COLOR = {
   resume: '#d08a1f',
   start: '#7a5bd0',
   statusHover: '#4f6d8f',
+  here: '#4ec468',
 } as const
+
+/** Shown instead of Resume on the task that belongs to the chat this pane is in. */
+const HERE_LABEL = '● This chat'
 
 /** Label and colour of the status shown on each row. */
 const STATUS_BADGE: Record<Status, { label: string; color: string }> = {
@@ -95,10 +100,10 @@ const STATUS_OPTIONS: readonly { value: Status; label: string; fill: string }[] 
   { value: 'done', label: ' Done ', fill: '#2f8f46' },
 ]
 
-const statusOf = (t: Item, now: number): Status => {
+const statusOf = (t: Item, now: number, newWindowMs: number = DEFAULT_NEW_WINDOW_MS): Status => {
   if (t.isDone) return 'done'
   if (t.inProgress) return 'progress'
-  if (t.createdAt !== undefined && now - t.createdAt < NEW_WINDOW_MS) return 'new'
+  if (t.createdAt !== undefined && now - t.createdAt < newWindowMs) return 'new'
   return 'todo'
 }
 
@@ -152,9 +157,11 @@ const List: ClientModule<Props, State> = (props, surface) => {
   // Row geometry, also used to map pointer y to a row while dragging.
   // The action line (status, Open, Resume/Start) is stacked on two explicit lines whenever it
   // might not fit, so a row's height never depends on the app wrapping it.
+  // The task started in this very chat; its Resume button would only reopen the chat it is in.
+  const isHere = (t: Item): boolean => !!props.currentSessionId && t.sessionId === props.currentSessionId
   const stackedFor = (t: Item): boolean => {
-    const label = STATUS_BADGE[statusOf(t, props.now)].label.length
-    const needed = GUTTER + label + 4 + (t.url ? 9 : 0) + 10
+    const label = STATUS_BADGE[statusOf(t, props.now, props.newWindowMs)].label.length
+    const needed = GUTTER + label + 4 + (t.url ? 9 : 0) + (isHere(t) ? HERE_LABEL.length : 10)
     return needed + 2 > surface.columns - 4
   }
   const linesOf = tasks.map(t => (cur.editId === t.id ? [''] : wrap(t.text, textWidth)))
@@ -272,7 +279,7 @@ const List: ClientModule<Props, State> = (props, surface) => {
 
   // The colour must stay on plain Text: inside a Button the app would drop it.
   const statusControl = (t: Item, mode: RowMode) => {
-    const badge = STATUS_BADGE[statusOf(t, props.now)]
+    const badge = STATUS_BADGE[statusOf(t, props.now, props.newWindowMs)]
     const scope = `stat-${mode}-${t.id}`
     return (
       <Box>
@@ -301,7 +308,11 @@ const List: ClientModule<Props, State> = (props, surface) => {
           <Text> </Text>
         </Box>
       ) : null}
-      {t.isDone || t.inProgress
+      {isHere(t) ? (
+        <Text key={`here-${mode}-${t.id}`} color={COLOR.here}>
+          {HERE_LABEL}
+        </Text>
+      ) : t.isDone || t.inProgress
         ? actionButton(t.id, `rs-${mode}`, ' ↩ Resume ', COLOR.resume, () =>
             send({ op: 'resume', id: t.id }),
           )

@@ -342,6 +342,16 @@ const readKeepResolvedMs = async ($: Ctx): Promise<number> => {
   return (Number.isFinite(days) && days >= 0 ? days : DEFAULT_KEEP_RESOLVED_DAYS) * DAY_MS
 }
 
+const HOUR_MS = 60 * 60 * 1000
+const DEFAULT_NEW_TASK_HOURS = 24
+
+/** Hours a task keeps its New tag (newTaskHours in the settings file); 0 turns the tag off. */
+const readNewWindowMs = async ($: Ctx): Promise<number> => {
+  const cfg = await readJson($, await dataFile($, ado.settingsFile))
+  const hours = Number(cfg?.newTaskHours)
+  return (Number.isFinite(hours) && hours >= 0 ? hours : DEFAULT_NEW_TASK_HOURS) * HOUR_MS
+}
+
 const pruneDismissed = async (
   $: Ctx,
   inbox: Inbox,
@@ -563,6 +573,10 @@ const defaultSettings = (organization: string, project: string) => ({
   repository: '',
   intervalMinutes: DEFAULT_INTERVAL_MINUTES,
   windowDays: 30,
+  newTaskHours: DEFAULT_NEW_TASK_HOURS,
+  testerState: 'Resolved',
+  testerField: 'Custom.Tester',
+  doneStates: ['Closed', 'Done', 'Removed', 'Resolved', 'Completed'],
   events: {
     assigned: true,
     prReplies: true,
@@ -1007,6 +1021,12 @@ export const register: Register = (on, options) => {
     const open = list.filter(t => !t.isDone).length
     const settingsPath = await dataFile($, ado.settingsFile)
     const suggestions = a.suggestions ?? []
+    const newWindowMs = await readNewWindowMs($)
+    // Lets the list mark the task that belongs to this chat; empty when the host gives no id.
+    let currentSessionId = ''
+    try {
+      currentSessionId = String(await $.session.id())
+    } catch {}
 
     const greyButton = (key: string, label: string, hoverBg: string, onPress: () => void) => {
       const hover = { scope: key, backgroundColor: hoverBg, color: 'white' }
@@ -1169,7 +1189,7 @@ export const register: Register = (on, options) => {
             key="todo-list"
             module="./list.tsx"
             width="100%"
-            props={{ tasks: list, now: Date.now() }}
+            props={{ tasks: list, now: Date.now(), newWindowMs, currentSessionId }}
           />
         )}
       </Box>

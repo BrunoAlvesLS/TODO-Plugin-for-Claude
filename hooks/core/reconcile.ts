@@ -10,6 +10,25 @@ export const inboxItems = (inbox: Inbox): InboxItem[] =>
 export const sourceOf = (sources: Source[], key: string): Source | undefined =>
   sources.find(s => s.owns.test(key))
 
+const isSameItem = (source: Source, a: string, b: string): boolean => {
+  const m = source.sameItem?.exec(a)
+  const n = source.sameItem?.exec(b)
+  return !!m && !!n && a !== b && m[1] === n[1]
+}
+
+/**
+ * The task of the same item under another key, taken over for `it`: its key, title, rev and url
+ * follow the inbox, everything else (id, status, session) stays. Only a task whose own key is gone
+ * from the inbox and that the user did not tick is taken over; an open one is preferred.
+ */
+const adopt = (list: Task[], it: InboxItem, present: Set<string>, source: Source): Task | undefined => {
+  const fits = (t: Task) =>
+    !!t.key && !present.has(t.key) && source.owns.test(t.key) && isSameItem(source, t.key, it.key) && t.closedBy !== 'user'
+  const task = list.find(t => fits(t) && !t.isDone) ?? list.find(fits)
+  if (task) Object.assign(task, { key: it.key, text: it.title, rev: it.rev, url: it.url })
+  return task
+}
+
 /**
  * Turns one source's current list into task changes: add, reopen, auto-close, prune.
  * Auto-close touches only tasks the source owns; a key nobody owns is never closed.
@@ -29,9 +48,10 @@ export const reconcile = (
 
   for (const it of items) {
     if (it.baseline) continue
-    const task = next.find(t => t.key === it.key)
+    let task = next.find(t => t.key === it.key)
     // Removed by hand: stay gone until the source has new activity (its rev changes).
     if (!task && it.key in dismissed && dismissed[it.key] === (it.rev ?? '')) continue
+    if (!task) task = adopt(next, it, present, source)
     if (!task) {
       next.unshift({
         id: id++,
@@ -88,10 +108,12 @@ export const reconcile = (
  * rev (an auto-closed item that came back) does not count.
  */
 export const newlyCreated = (before: Task[], after: Task[]): Task[] => {
-  const old = new Map(before.filter(t => t.key).map(t => [t.key as string, t]))
+  const byKey = new Map(before.filter(t => t.key).map(t => [t.key as string, t]))
+  const byId = new Map(before.map(t => [t.id, t]))
   return after.filter(t => {
     if (!t.key) return false
-    const was = old.get(t.key)
+    // A task that moved to another key of the same item keeps its id; that is not a new task.
+    const was = byKey.get(t.key) ?? byId.get(t.id)
     if (!was) return true
     return was.isDone && !t.isDone && was.rev !== t.rev
   })

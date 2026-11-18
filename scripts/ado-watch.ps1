@@ -202,6 +202,14 @@ function Test-EventEnabled([string]$Name) {
     if ($settings.events -and ($settings.events.PSObject.Properties.Name -contains $Name)) { return [bool]$settings.events.$Name }
     return $true
 }
+# Process-specific names, overridable in alerts.json. Values go into WIQL, so single quotes are doubled.
+function ConvertTo-WiqlLiteral([string]$Value) { return "'" + $Value.Replace("'", "''") + "'" }
+$TesterState = 'Resolved'
+if (([string]$settings.testerState).Trim()) { $TesterState = ([string]$settings.testerState).Trim() }
+$TesterField = 'Custom.Tester'
+if (([string]$settings.testerField).Trim() -match '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$') { $TesterField = ([string]$settings.testerField).Trim() }
+$doneList = @($settings.doneStates | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+if ($doneList.Count -gt 0) { $DoneStates = ($doneList | ForEach-Object { ConvertTo-WiqlLiteral $_ }) -join ',' }
 $ignore = @()
 if ($settings.ignoreIds) { $ignore = @($settings.ignoreIds | ForEach-Object { [string]$_ }) }
 
@@ -312,9 +320,10 @@ if (Test-EventEnabled 'assigned') { Invoke-Section 'assigned' {
     }
 } }
 
-# 1b. Tickets where I am the Tester (Custom.Tester) and the state is Resolved (ready to test).
+# 1b. Tickets where I am the tester (testerField, default Custom.Tester) and the state is testerState (default Resolved = ready to test).
 if (Test-EventEnabled 'tester') { Invoke-Section 'tester' {
-    $ids = @(Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE [Custom.Tester] = @Me AND [System.State] = 'Resolved' AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100)
+    $testerStateLiteral = ConvertTo-WiqlLiteral $TesterState
+    $ids = @(Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE [$TesterField] = @Me AND [System.State] = $testerStateLiteral AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100)
     foreach ($w in (Get-WorkItems $ids)) {
         if (Test-AssignedToMe $w) { continue }
         Add-Item "wi-tester:$($w.id)" 'tester' "Test $($w.fields.'System.WorkItemType') $($w.id): $($w.fields.'System.Title')" (Get-WorkItemUrl $w.id) ''

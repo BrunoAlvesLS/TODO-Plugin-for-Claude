@@ -72,6 +72,12 @@ export type Source = {
   owns: RegExp
   /** Owned keys that must come back while still active, even after the user ticked them and they expired. */
   keepOnUserExpire?: RegExp
+  /**
+   * Keys that are one item seen in a different role: two keys matching this with an equal group 1 are
+   * the same item, and a task moves from one to the other instead of a second task being created.
+   * No `g` flag.
+   */
+  sameItem?: RegExp
 }
 
 declare module 'claude-code' {
