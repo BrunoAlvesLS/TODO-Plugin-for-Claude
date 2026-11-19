@@ -160,10 +160,12 @@ const List: ClientModule<Props, State> = (props, surface) => {
   const isHere = (t: Item): boolean => !!props.currentSessionId && t.sessionId === props.currentSessionId
   const stackedFor = (t: Item): boolean => {
     const label = STATUS_BADGE[statusOf(t, props.now, props.newWindowMs)].label.length
-    const needed = GUTTER + label + 4 + (t.url ? 9 : 0) + (isHere(t) ? 2 : 10)
+    const needed = GUTTER + label + 4 + (t.url ? 9 : 0) + (isHere(t) ? 0 : 10)
     return needed + 2 > surface.columns - 4
   }
-  const linesOf = tasks.map(t => (cur.editId === t.id ? [''] : wrap(t.text, textWidth)))
+  const linesOf = tasks.map(t =>
+    cur.editId === t.id ? [''] : wrap(t.text, isHere(t) ? textWidth - 2 : textWidth),
+  )
   const heights = linesOf.map((l, i) => {
     const t = tasks[i]
     return l.length + ROW_CHROME_LINES + (t && stackedFor(t) ? 1 : 0)
@@ -323,12 +325,11 @@ const List: ClientModule<Props, State> = (props, surface) => {
   const taskActions = (t: Item, mode: RowMode) =>
     stackedFor(t) ? (
       <Box flexDirection="column">
-        <Box>{hereMark(t, mode)}{statusControl(t, mode)}</Box>
+        <Box>{statusControl(t, mode)}</Box>
         {openAndStart(t, mode)}
       </Box>
     ) : (
       <Box>
-        {hereMark(t, mode)}
         {statusControl(t, mode)}
         {openAndStart(t, mode)}
       </Box>
@@ -375,7 +376,9 @@ const List: ClientModule<Props, State> = (props, surface) => {
               />
             </Box>
           ) : (
-            <Box flexDirection="column" flexGrow={1}>
+            <Box flexGrow={1}>
+              {hereMark(t, mode)}
+              <Box flexDirection="column" flexGrow={1}>
               {lines.map((line, i) => (
                 <Text
                   key={`l-${t.id}-${i}`}
@@ -387,6 +390,7 @@ const List: ClientModule<Props, State> = (props, surface) => {
                   {line}
                 </Text>
               ))}
+              </Box>
             </Box>
           )}
           {!isEditing && !isConfirming ? (
