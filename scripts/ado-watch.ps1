@@ -254,12 +254,24 @@ try {
 $H = @{ Authorization = "Bearer $token" }
 $Base = "https://dev.azure.com/$Org"
 
-function Get-Ado([string]$Url) { return Invoke-RestMethod -Uri $Url -Method Get -Headers $H }
+# A sign-in or error page comes back as XML or an HTML string. Other strings pass: Windows
+# PowerShell returns valid JSON with keys differing only in case as a plain string.
+function Assert-JsonResponse($Response) {
+    if ($Response -is [System.Xml.XmlDocument] -or ($Response -is [string] -and $Response.TrimStart().StartsWith('<'))) { throw 'Azure DevOps returned a web page instead of JSON' }
+}
+
+function Get-Ado([string]$Url) {
+    $r = Invoke-RestMethod -Uri $Url -Method Get -Headers $H
+    Assert-JsonResponse $r
+    return $r
+}
 
 # WIQL only accepts POST, but it is a query: nothing in ADO changes.
 function Invoke-Wiql([string]$Query) {
     $body = @{ query = $Query } | ConvertTo-Json
-    return Invoke-RestMethod -Uri "$Base/$Proj/_apis/wit/wiql?api-version=7.0" -Method Post -Headers $H -Body $body -ContentType 'application/json'
+    $r = Invoke-RestMethod -Uri "$Base/$Proj/_apis/wit/wiql?api-version=7.0" -Method Post -Headers $H -Body $body -ContentType 'application/json'
+    Assert-JsonResponse $r
+    return $r
 }
 
 function Get-WiqlIds([string]$Query, [int]$Max) {
@@ -479,6 +491,16 @@ $prev = Read-Json $StatePath $null
 $firstRun = ($null -eq $prev -or $null -eq $prev.seen)
 $seen = @{}
 if (-not $firstRun) { foreach ($p in $prev.seen.PSObject.Properties) { $seen[$p.Name] = [string]$p.Value } }
+# A run that finds nothing at all while items were open is more likely a silent ADO hiccup than
+# everything resolved at once: treat it as failed, and believe it only after 15 minutes of it.
+$emptySince = $null
+if (-not $firstRun -and $errors.Count -eq 0 -and $items.Count -eq 0 -and $seen.Count -gt 0) {
+    $since = if ($prev.emptySince) { [datetime]$prev.emptySince } else { Get-Date }
+    if (((Get-Date) - $since).TotalMinutes -lt 15) {
+        $errors += "empty: 0 items while $($seen.Count) were seen; treated as failed"
+        $emptySince = $since.ToString('o')
+    }
+}
 $failedSections = ($errors.Count -gt 0)
 
 # Baseline = present on the first run and untouched since; the pane does not add those as tasks.
@@ -524,9 +546,14 @@ foreach ($it in $out) {
 }
 # When a section failed, keep what was seen before so a hiccup does not look like "resolved then new".
 if ($failedSections -and -not $firstRun) {
-    foreach ($k in $seen.Keys) { if (-not $newSeen.Contains($k)) { $newSeen[$k] = $seen[$k] } }
+    foreach ($k in $seen.Keys) {
+        if ($newSeen.Contains($k)) { continue }
+        $newSeen[$k] = $seen[$k]
+        # Keep the baseline flag too, otherwise a failed run turns every silently tracked item into a new task on the next run.
+        if ($prev.baseline -and ($prev.baseline.PSObject.Properties.Name -contains $k)) { $newBase[$k] = $true }
+    }
 }
-Write-JsonAtomic $StatePath ([ordered]@{ seen = $newSeen; baseline = $newBase; updated = (Get-Date).ToString('o') })
+Write-JsonAtomic $StatePath ([ordered]@{ seen = $newSeen; baseline = $newBase; updated = (Get-Date).ToString('o'); emptySince = $emptySince })
 
 # An open Claude session writes heartbeat.txt (epoch ms) every sync and raises its own alert for
 # the tasks it adds, so this toast is skipped while that heartbeat is fresh.
@@ -546,4 +573,5 @@ if ($newOnes.Count -gt 0 -and -not $quiet -and -not $sessionAlive) {
     if ($newOnes.Count -gt 1) { $body = $body + " (+$($newOnes.Count - 1) more)" }
     [void](Show-Toast $title $body $first.url)
 }
-Write-Log ("ok: {0} open, {1} new, first={2}, errors={3}, sessionAlive={4}" -f $out.Count, $newOnes.Count, $firstRun, $errors.Count, $sessionAlive)
+$byType = (@($out | Group-Object { $_.type } | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' ')
+Write-Log ("ok: {0} open, {1} new, first={2}, errors={3}, sessionAlive={4}, types=[{5}]" -f $out.Count, $newOnes.Count, $firstRun, $errors.Count, $sessionAlive, $byType)
