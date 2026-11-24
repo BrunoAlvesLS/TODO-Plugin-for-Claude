@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Alerts, Dismissed, Inbox, Source, Task } from '../types'
+import { buildJobXml } from './core/job'
 import { canonical, nextId } from './core/tasks'
 import {
   DAY_MS,
@@ -674,21 +675,16 @@ const readIntervalMinutes = async ($: Ctx, settingsPath: string): Promise<number
   return minutes >= 1 ? minutes : DEFAULT_INTERVAL_MINUTES
 }
 
-const createJob = ($: Ctx, script: string, everyMinutes: number) =>
-  $.process.run([
-    'schtasks',
-    '/Create',
-    '/TN',
-    ado.jobName,
-    '/SC',
-    'MINUTE',
-    '/MO',
-    String(everyMinutes),
-    '/TR',
-    // conhost --headless keeps a console window from flashing on every run.
-    `conhost.exe --headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${script}"`,
-    '/F',
-  ])
+/** Imports the job from XML: plain `schtasks /Create` flags would leave it blocked on battery (see buildJobXml). */
+const createJob = async ($: Ctx, script: string, everyMinutes: number) => {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const start = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:00`
+  const xmlFile = await dataFile($, 'job.xml')
+  await $.fs.write(xmlFile, buildJobXml(script, everyMinutes, start))
+  // conhost --headless (in the XML) keeps a console window from flashing on every run.
+  return $.process.run(['schtasks', '/Create', '/TN', ado.jobName, '/XML', xmlFile, '/F'])
+}
 
 /** The job's repeat interval in minutes (from its XML, e.g. PT10M), or undefined when it cannot be read. */
 const readJobIntervalMinutes = async ($: Ctx): Promise<number | undefined> => {
