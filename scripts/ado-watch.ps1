@@ -206,10 +206,41 @@ function Test-EventEnabled([string]$Name) {
 function ConvertTo-WiqlLiteral([string]$Value) { return "'" + $Value.Replace("'", "''") + "'" }
 $TesterState = 'Resolved'
 if (([string]$settings.testerState).Trim()) { $TesterState = ([string]$settings.testerState).Trim() }
+$FieldNamePattern = '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$'
 $TesterField = 'Custom.Tester'
-if (([string]$settings.testerField).Trim() -match '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$') { $TesterField = ([string]$settings.testerField).Trim() }
-$doneList = @($settings.doneStates | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
-if ($doneList.Count -gt 0) { $DoneStates = ($doneList | ForEach-Object { ConvertTo-WiqlLiteral $_ }) -join ',' }
+if (([string]$settings.testerField).Trim() -match $FieldNamePattern) { $TesterField = ([string]$settings.testerField).Trim() }
+function ConvertTo-WiqlStateList($States) {
+    $list = @($States | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    if ($list.Count -eq 0) { return $null }
+    return (($list | ForEach-Object { ConvertTo-WiqlLiteral $_ }) -join ',')
+}
+$doneList = ConvertTo-WiqlStateList $settings.doneStates
+if ($doneList) { $DoneStates = $doneList }
+
+# Optional roles: the identity fields that make a ticket mine, each with its own state rule.
+# "states" lists the only states it shows in; otherwise "doneStates" (or the top-level list) hides it.
+$Roles = @()
+if ($settings.roles) {
+    foreach ($p in $settings.roles.PSObject.Properties) {
+        $field = ([string]$p.Value.field).Trim()
+        if ($field -notmatch $FieldNamePattern) { Write-Log "role $($p.Name): invalid field '$field'; skipped"; continue }
+        $show = ConvertTo-WiqlStateList $p.Value.states
+        $hide = ConvertTo-WiqlStateList $p.Value.doneStates
+        if ($show) { $op = 'IN'; $states = $show }
+        else { $op = 'NOT IN'; $states = if ($hide) { $hide } else { $DoneStates } }
+        $Roles += [pscustomobject]@{ name = $p.Name; field = $field; op = $op; states = $states }
+    }
+}
+
+# Without usable roles, the assignee alone counts, hiding the top-level done states.
+# $Prefix is '' for a work item query and '[Source].' for a link query.
+function Get-RoleClauses([string]$Prefix = '') {
+    $roles = $script:Roles
+    if (-not $roles -or $roles.Count -eq 0) { $roles = @([pscustomobject]@{ name = 'assignee'; field = 'System.AssignedTo'; op = 'NOT IN'; states = $DoneStates }) }
+    foreach ($r in $roles) {
+        [pscustomobject]@{ name = $r.name; clause = "$Prefix[$($r.field)] = @Me AND $Prefix[System.State] $($r.op) ($($r.states))" }
+    }
+}
 $ignore = @()
 if ($settings.ignoreIds) { $ignore = @($settings.ignoreIds | ForEach-Object { [string]$_ }) }
 
@@ -307,6 +338,35 @@ $conn = Get-Ado "$Base/_apis/connectionData?api-version=7.0-preview"
 $myId = [string]$conn.authenticatedUser.id
 $myName = [string]$conn.authenticatedUser.providerDisplayName
 
+# A WIQL naming a field that does not exist fails as a whole (TF51005), so drop such roles first.
+if ($Roles.Count -gt 0) {
+    try {
+        $known = @{}
+        foreach ($f in @((Get-Ado "$Base/_apis/wit/fields?api-version=7.0").value)) { $known[[string]$f.referenceName] = $f }
+        $Roles = @($Roles | Where-Object {
+            $f = $known[$_.field]
+            if (-not $f) { Write-Log "role $($_.name): field $($_.field) not found; skipped"; return $false }
+            if (-not $f.isIdentity) { Write-Log "role $($_.name): field $($_.field) is not an identity field; skipped"; return $false }
+            return $true
+        })
+        if ($Roles.Count -eq 0) { Write-Log 'roles: none usable; falling back to the assignee' }
+    } catch { Write-Log "roles: field check failed ($($_.Exception.Message)); using all roles" }
+}
+
+# Runs one WIQL per role, each isolated: a failing role is recorded and the others still count.
+function Invoke-RoleQueries([string]$Section, [string]$Prefix, [scriptblock]$Query) {
+    foreach ($rc in @(Get-RoleClauses $Prefix)) {
+        try { & $Query $rc.clause }
+        catch { $script:errors += "$Section/$($rc.name): $($_.Exception.Message)"; Write-Log "$Section/$($rc.name) failed: $($_.Exception.Message)" }
+    }
+}
+
+# Tickets already listed through a role need no second entry as tester or child.
+function Test-ListedAsMine($WorkItem) {
+    if (Test-EventEnabled 'assigned') { return $items.ContainsKey("wi-assigned:$($WorkItem.id)") }
+    return (Test-AssignedToMe $WorkItem)
+}
+
 # ---------------------------------------------------------------------------------------------
 # Collect what needs me. Each section is isolated: a failure is recorded and the rest still run.
 # ---------------------------------------------------------------------------------------------
@@ -324,9 +384,13 @@ function Invoke-Section([string]$Name, [scriptblock]$Block) {
     try { & $Block } catch { $script:errors += "${Name}: $($_.Exception.Message)"; Write-Log "${Name} failed: $($_.Exception.Message)" }
 }
 
-# 1. Assigned to me
+# 1. Tickets I hold a role on (by default: assigned to me)
 if (Test-EventEnabled 'assigned') { Invoke-Section 'assigned' {
-    $ids = @(Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] = @Me AND [System.State] NOT IN ($DoneStates) AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100)
+    $found = @(Invoke-RoleQueries 'assigned' '' {
+        param($Clause)
+        Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE $Clause AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100
+    })
+    $ids = @($found | Select-Object -Unique | Select-Object -First 100)
     foreach ($w in (Get-WorkItems $ids)) {
         Add-Item "wi-assigned:$($w.id)" 'assigned' "$($w.fields.'System.WorkItemType') $($w.id): $($w.fields.'System.Title')" (Get-WorkItemUrl $w.id) ''
     }
@@ -337,20 +401,23 @@ if (Test-EventEnabled 'tester') { Invoke-Section 'tester' {
     $testerStateLiteral = ConvertTo-WiqlLiteral $TesterState
     $ids = @(Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE [$TesterField] = @Me AND [System.State] = $testerStateLiteral AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100)
     foreach ($w in (Get-WorkItems $ids)) {
-        if (Test-AssignedToMe $w) { continue }
+        if (Test-ListedAsMine $w) { continue }
         Add-Item "wi-tester:$($w.id)" 'tester' "Test $($w.fields.'System.WorkItemType') $($w.id): $($w.fields.'System.Title')" (Get-WorkItemUrl $w.id) ''
     }
 } }
 
 # 2. New child bugs/tasks under my tickets
 if (Test-EventEnabled 'childItems') { Invoke-Section 'childItems' {
-    $q = "SELECT [System.Id] FROM WorkItemLinks WHERE [Source].[System.AssignedTo] = @Me AND [Source].[System.State] NOT IN ($DoneStates) AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' AND [Target].[System.State] NOT IN ($DoneStates) AND [Target].[System.CreatedDate] >= @Today - $WindowDays MODE (MustContain)"
-    $rel = @((Invoke-Wiql $q).workItemRelations | Where-Object { $_.source -and $_.target })
+    $rel = @(Invoke-RoleQueries 'childItems' '[Source].' {
+        param($Clause)
+        $q = "SELECT [System.Id] FROM WorkItemLinks WHERE $Clause AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' AND [Target].[System.State] NOT IN ($DoneStates) AND [Target].[System.CreatedDate] >= @Today - $WindowDays MODE (MustContain)"
+        (Invoke-Wiql $q).workItemRelations | Where-Object { $_.source -and $_.target }
+    })
     $parentOf = @{}
     foreach ($r in $rel) { $parentOf[[int]$r.target.id] = [int]$r.source.id }
     $ids = @($parentOf.Keys | Select-Object -First 100)
     foreach ($w in (Get-WorkItems $ids)) {
-        if (Test-AssignedToMe $w) { continue }
+        if (Test-ListedAsMine $w) { continue }
         Add-Item "wi-child:$($w.id)" 'child' "New $($w.fields.'System.WorkItemType') $($w.id) under ticket $($parentOf[[int]$w.id]): $($w.fields.'System.Title')" (Get-WorkItemUrl $w.id) ''
     }
 } }
