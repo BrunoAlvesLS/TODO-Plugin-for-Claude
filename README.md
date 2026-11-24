@@ -18,7 +18,7 @@ You need the Claude desktop app and [Node.js](https://nodejs.org) (on your PATH)
 
 1. On the GitHub page of this repo press **Code → Download ZIP**.
 2. In the Claude app open **Settings → Plugins → Add** and import the ZIP file.
-3. Start a **new session** and run `/todo-pane:todo` (plain `/todo` also works once you have sent your first message). The pane opens.
+3. Start a **new session** and run `/todo`. The pane opens.
 4. Optional: press **Set up** in the pane to turn on the Azure DevOps Auto-sync (see "Auto-sync" below).
 
 Updating: download the new ZIP and import it again, then start a new session. Sessions that were already open keep the old version until you close them.
