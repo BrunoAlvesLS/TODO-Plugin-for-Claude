@@ -217,6 +217,15 @@ function ConvertTo-WiqlStateList($States) {
 $doneList = ConvertTo-WiqlStateList $settings.doneStates
 if ($doneList) { $DoneStates = $doneList }
 
+# Work item types never listed or alerted on (default Epic and Feature; [] lists every type).
+$ExcludeTypes = @('Epic', 'Feature')
+if ($settings.PSObject.Properties.Name -contains 'excludeTypes') { $ExcludeTypes = @($settings.excludeTypes | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }) }
+function Get-TypeExclusion([string]$Prefix = '') {
+    if ($ExcludeTypes.Count -eq 0) { return '' }
+    $list = ($ExcludeTypes | ForEach-Object { ConvertTo-WiqlLiteral $_ }) -join ','
+    return " AND $Prefix[System.WorkItemType] NOT IN ($list)"
+}
+
 # Optional roles: the identity fields that make a ticket mine, each with its own state rule.
 # "states" lists the only states it shows in; otherwise "doneStates" (or the top-level list) hides it.
 $Roles = @()
@@ -388,7 +397,7 @@ function Invoke-Section([string]$Name, [scriptblock]$Block) {
 if (Test-EventEnabled 'assigned') { Invoke-Section 'assigned' {
     $found = @(Invoke-RoleQueries 'assigned' '' {
         param($Clause)
-        Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE $Clause AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100
+        Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE $Clause$(Get-TypeExclusion) AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100
     })
     $ids = @($found | Select-Object -Unique | Select-Object -First 100)
     foreach ($w in (Get-WorkItems $ids)) {
@@ -399,7 +408,7 @@ if (Test-EventEnabled 'assigned') { Invoke-Section 'assigned' {
 # 1b. Tickets where I am the tester (testerField, default Custom.Tester) and the state is testerState (default Resolved = ready to test).
 if (Test-EventEnabled 'tester') { Invoke-Section 'tester' {
     $testerStateLiteral = ConvertTo-WiqlLiteral $TesterState
-    $ids = @(Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE [$TesterField] = @Me AND [System.State] = $testerStateLiteral AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100)
+    $ids = @(Get-WiqlIds "SELECT [System.Id] FROM WorkItems WHERE [$TesterField] = @Me AND [System.State] = $testerStateLiteral$(Get-TypeExclusion) AND [System.ChangedDate] >= @Today - $WindowDays ORDER BY [System.ChangedDate] DESC" 100)
     foreach ($w in (Get-WorkItems $ids)) {
         if (Test-ListedAsMine $w) { continue }
         Add-Item "wi-tester:$($w.id)" 'tester' "Test $($w.fields.'System.WorkItemType') $($w.id): $($w.fields.'System.Title')" (Get-WorkItemUrl $w.id) ''
@@ -410,7 +419,7 @@ if (Test-EventEnabled 'tester') { Invoke-Section 'tester' {
 if (Test-EventEnabled 'childItems') { Invoke-Section 'childItems' {
     $rel = @(Invoke-RoleQueries 'childItems' '[Source].' {
         param($Clause)
-        $q = "SELECT [System.Id] FROM WorkItemLinks WHERE $Clause AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' AND [Target].[System.State] NOT IN ($DoneStates) AND [Target].[System.CreatedDate] >= @Today - $WindowDays MODE (MustContain)"
+        $q = "SELECT [System.Id] FROM WorkItemLinks WHERE $Clause$(Get-TypeExclusion '[Source].')$(Get-TypeExclusion '[Target].') AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' AND [Target].[System.State] NOT IN ($DoneStates) AND [Target].[System.CreatedDate] >= @Today - $WindowDays MODE (MustContain)"
         (Invoke-Wiql $q).workItemRelations | Where-Object { $_.source -and $_.target }
     })
     $parentOf = @{}
