@@ -2,6 +2,10 @@
 
 A TODO list pane for the Claude desktop app: add, edit, check off, remove and drag to reorder tasks, and press ▶ Start to write an opening prompt for a task into the prompt box. Optionally it watches Azure DevOps and adds what needs you.
 
+![The TODO pane in the Claude desktop app, with task text blurred](docs/todo-pane.png)
+
+*Task text is blurred. Orange "New" marks recent tasks, yellow "in progress" tasks you started with ▶ Start, green "resolved" tasks that are done.*
+
 The pane opens when you run `/todo`. In a brand new session, before your first message, the menu lists it as `/todo-pane:todo`; after the first message plain `/todo` works too. Both do the same.
 
 When the automatic once-a-minute sync adds new tasks (a new item, or a closed one reopened by new activity), a Windows notification headed "Claude" appears ("New on your list", the first task, "(+N more)"), plus the same line in the session for 10 seconds; nothing during `quietHours` in alerts.json. Only the session whose save added the tasks alerts, once per sync. The first sync after a session starts, ↻ refresh, setup and settings changes do not alert. Each sync tick writes `heartbeat.txt` (epoch ms) to the data folder; while it is under 150 seconds old the scheduled job skips its own new-item notification (its sign-in notification is unchanged), so you get one alert, not two.
