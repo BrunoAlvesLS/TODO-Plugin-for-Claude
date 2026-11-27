@@ -2,9 +2,9 @@
 
 A TODO list pane for the Claude desktop app: add, edit, check off, remove and drag to reorder tasks, and press ▶ Start to write an opening prompt for a task into the prompt box. Optionally it watches Azure DevOps and adds what needs you.
 
-![The TODO pane in the Claude desktop app, with task text blurred](docs/todo-pane.png)
+![The TODO pane in the Claude desktop app, with people's names blurred](docs/todo-pane.png)
 
-*Task text is blurred. Orange "New" marks recent tasks, yellow "in progress" tasks you started with ▶ Start, green "resolved" tasks that are done.*
+*Names are blurred. Orange "New" marks recent tasks, yellow "in progress" tasks you started with ▶ Start, green "resolved" tasks that are done.*
 
 The pane opens when you run `/todo`. In a brand new session, before your first message, the menu lists it as `/todo-pane:todo`; after the first message plain `/todo` works too. Both do the same.
 
